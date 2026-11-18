@@ -18,7 +18,33 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:8000";
+// Where the PathSnap API runs (two-laptop deployment: the API is on Laptop 1, this UI on Laptop 2).
+// Priority: ?api=http://IP:PORT in the page URL (remembered in this browser)
+//           > VITE_API_URL in frontend/.env.local
+//           > a previously remembered ?api= value
+//           > same host as this page, port 8000.
+function resolveApiUrl() {
+  const clean = (url) => url.trim().replace(/\/+$/, "");
+  const fromQuery = new URLSearchParams(window.location.search).get("api");
+  if (fromQuery) {
+    try {
+      localStorage.setItem("pathsnap_api_url", clean(fromQuery));
+    } catch {
+      /* storage unavailable: use it for this page load only */
+    }
+    return clean(fromQuery);
+  }
+  if (import.meta.env.VITE_API_URL) return clean(import.meta.env.VITE_API_URL);
+  try {
+    const saved = localStorage.getItem("pathsnap_api_url");
+    if (saved) return saved;
+  } catch {
+    /* ignore */
+  }
+  return `http://${window.location.hostname}:8000`;
+}
+
+const API_URL = resolveApiUrl();
 
 function FitMap({ points }) {
   const map = useMap();
@@ -60,7 +86,10 @@ export default function App() {
           setSelectedTrip(available[0].trip_id);
         }
       } catch {
-        setError("Unable to connect to the PathSnap backend.");
+        setError(
+          `Unable to connect to the PathSnap backend at ${API_URL}. ` +
+            "Check that the API is running on Laptop 1 and that VITE_API_URL (or ?api=) points to it."
+        );
       }
     }
 
