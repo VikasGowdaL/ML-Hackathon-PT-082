@@ -1,0 +1,20 @@
+# Feature-table assembly configuration (Milestone 2, Person 4)
+
+# Candidate generation (Person 1 defaults, see configs/candidates.yaml)
+radius_m: 50.0
+max_candidates: 30
+
+# Gap policy -- proposed by Person 4, to be confirmed with Person 1.
+# Evidence (notebooks/06_feature_assembly.ipynb, 227,487 GPS intervals over 90 trips):
+#   dt > 10 s: 617 intervals (0.27 %, 42 trips);  dt > 60 s: 70 intervals (0.03 %, 23 trips)
+gap_policy:
+  flag_gap_s: 10.0      # after_gap / before_gap flags
+  split_gap_s: 60.0     # new segment_id; do not chain HMM transitions across segments
+  max_speed_mps: 70.0   # implausible_speed flag (~250 km/h implied from the previous point)
+  min_move_m: 2.0       # minimum displacement for a valid heading
+
+partitions:
+  - train
+  - student_test
+
+output_dir: outputs/features
