@@ -46,6 +46,19 @@ python scripts/run_api.py
 
 `PATHSNAP_CORS_ORIGINS="*"` allows every origin (debugging only).
 
+## Laptop 1 – data and model (before the demo)
+
+1. `git pull` – this includes the final model `artifacts/models/final_model.joblib` (no retraining needed).
+   To rebuild it instead: `python scripts/export_final_model.py`.
+2. Put the evaluation trips in `data/raw/evaluator_test/<trip_id>/<trip_id>.{track,nodes,arcs,route}` (git-ignored).
+   Their IDs are listed under `evaluator_test` in `configs/split.json`.
+3. Start the API and check `http://127.0.0.1:8000/api/health`: `"model_available": true` and `"evaluation_trips": 10`.
+4. **Rehearsal without evaluator data:** `$env:PATHSNAP_EVAL_PARTITION = "student_test"` before `python scripts/run_api.py`
+   – the UI then lists the 10 student-test trips instead.
+
+Each prediction takes about 1–3 s (cached afterwards). The `.route` file is read only after prediction, to compute the
+accuracy shown in the UI.
+
 ## Laptop 2 – UI
 
 ```powershell
@@ -69,7 +82,8 @@ Open `http://localhost:5173` on Laptop 2.
 2. **Laptop 2:** `http://<Laptop 1 IP>:8000/api/health` in a browser. If this fails, it is the network or firewall,
    not the code.
 3. **Laptop 2:** `http://<Laptop 1 IP>:8000/docs` shows the Swagger UI.
-4. **Laptop 2:** open the UI; the trip list loads. The UI's error message shows which API address it tried.
+4. **Laptop 2:** open the UI; the trip list shows the evaluation trips. The UI's error message shows which API address it tried.
+5. Select a trip, click **Predict Route**: the orange route and the results panel appear.
 
 ## Troubleshooting
 
