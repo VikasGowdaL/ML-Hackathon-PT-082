@@ -1,10 +1,11 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import axios from "axios";
 import {
   MapContainer,
   TileLayer,
-  Polyline,
   CircleMarker,
+  Polyline,
   useMap,
 } from "react-leaflet";
 import {
@@ -17,36 +18,91 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-const sampleRoute = [
-  [12.9716, 77.5946],
-  [12.9731, 77.5971],
-  [12.9752, 77.6004],
-  [12.9778, 77.6032],
-  [12.9802, 77.6061],
-];
+const API_URL = "http://127.0.0.1:8000";
 
-const gpsPoints = [
-  [12.9718, 77.5942],
-  [12.9729, 77.5975],
-  [12.9756, 77.6001],
-  [12.9775, 77.6036],
-  [12.9805, 77.6058],
-];
-
-function FitRoute({ points }) {
+function FitMap({ points }) {
   const map = useMap();
 
-  useState(() => {
-    // MapContainer starts at the sample route's center.
-  });
+  useEffect(() => {
+    if (!points.length) return;
+
+    const bounds = points.map((p) => [p.lat, p.lon]);
+
+    if (bounds.length === 1) {
+      map.setView(bounds[0], 16);
+    } else {
+      map.fitBounds(bounds, { padding: [35, 35] });
+    }
+  }, [points, map]);
 
   return null;
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
+  const [trips, setTrips] = useState([]);
+  const [selectedTrip, setSelectedTrip] = useState("");
+  const [tripData, setTripData] = useState(null);
   const [showGPS, setShowGPS] = useState(true);
-  const [showRoute, setShowRoute] = useState(true);
+  const [showTrack, setShowTrack] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function fetchTrips() {
+      try {
+        const response = await axios.get(`${API_URL}/api/trips`);
+        const available = response.data.trips || [];
+
+        setTrips(available);
+
+        if (available.length > 0) {
+          setSelectedTrip(available[0].trip_id);
+        }
+      } catch {
+        setError("Unable to connect to the PathSnap backend.");
+      }
+    }
+
+    fetchTrips();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedTrip) return;
+
+    let cancelled = false;
+
+    async function fetchTrip() {
+      setLoading(true);
+      setError("");
+      setTripData(null);
+
+      try {
+        const response = await axios.get(
+          `${API_URL}/api/trips/${selectedTrip}`
+        );
+
+        if (!cancelled) {
+          setTripData(response.data);
+        }
+      } catch {
+        if (!cancelled) {
+          setError("Unable to load the selected trip.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchTrip();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTrip]);
+
+  const points = tripData?.gps_points || [];
+  const positions = points.map((p) => [p.lat, p.lon]);
 
   const menu = [
     { name: "Dashboard", icon: Map },
@@ -82,7 +138,7 @@ export default function App() {
 
         <div className="sidebar-footer">
           <Activity size={17} color="#34d399" />
-          Frontend Demo Mode
+          Backend Integration
         </div>
       </aside>
 
@@ -92,36 +148,72 @@ export default function App() {
             <h1>{activeTab}</h1>
             <p>GPS Map Matching & Route Reconstruction</p>
           </div>
-          <span className="demo-badge">DEMO DATA</span>
+
+          <span className="demo-badge">
+            {tripData ? "REAL GPS DATA" : "AWAITING DATA"}
+          </span>
         </header>
 
         <section className="stats-grid">
           <div className="stat-card">
             <span>Selected Trip</span>
-            <strong>Demo Trip 001</strong>
+            <strong>{selectedTrip || "None"}</strong>
           </div>
+
           <div className="stat-card">
             <span>GPS Observations</span>
-            <strong>{gpsPoints.length}</strong>
+            <strong>{tripData?.gps_count ?? 0}</strong>
           </div>
+
           <div className="stat-card">
-            <span>Route Points</span>
-            <strong>{sampleRoute.length}</strong>
+            <span>Road Network Arcs</span>
+            <strong>{tripData?.arcs_count ?? 0}</strong>
           </div>
+
           <div className="stat-card">
-            <span>Mode</span>
-            <strong>Visualization</strong>
+            <span>Dataset Partition</span>
+            <strong>{tripData?.partition || "—"}</strong>
           </div>
         </section>
 
         <section className="map-panel">
           <div className="panel-header">
             <div>
-              <h2>Route Visualization</h2>
-              <p>GPS observations and demonstration route</p>
+              <h2>GPS Trip Visualization</h2>
+              <p>
+                Select a trip to visualize its actual GPS
+                observations.
+              </p>
             </div>
 
             <div className="map-controls">
+              <select
+                value={selectedTrip}
+                onChange={(e) =>
+                  setSelectedTrip(e.target.value)
+                }
+                style={{
+                  background: "#0f172a",
+                  color: "#fff",
+                  padding: "10px",
+                  border: "1px solid #334155",
+                  borderRadius: "8px",
+                }}
+              >
+                {trips.length === 0 && (
+                  <option value="">No trips available</option>
+                )}
+
+                {trips.map((trip) => (
+                  <option
+                    key={trip.trip_id}
+                    value={trip.trip_id}
+                  >
+                    {trip.trip_id} ({trip.partition})
+                  </option>
+                ))}
+              </select>
+
               <label>
                 <input
                   type="checkbox"
@@ -132,52 +224,65 @@ export default function App() {
                 />
                 GPS Points
               </label>
+
               <label>
                 <input
                   type="checkbox"
-                  checked={showRoute}
+                  checked={showTrack}
                   onChange={(e) =>
-                    setShowRoute(e.target.checked)
+                    setShowTrack(e.target.checked)
                   }
                 />
-                Route
+                GPS Trace
               </label>
             </div>
           </div>
 
+          {error && (
+            <p style={{ color: "#f87171" }}>{error}</p>
+          )}
+
+          {loading && <p>Loading GPS trip...</p>}
+
+          {!loading && !error && trips.length === 0 && (
+            <p>No local GPS trips were found.</p>
+          )}
+
           <div className="map-wrapper">
             <MapContainer
-              center={[12.9752, 77.6004]}
-              zoom={14}
+              center={[20, 0]}
+              zoom={2}
               scrollWheelZoom={true}
               style={{ height: "100%", width: "100%" }}
             >
               <TileLayer
-                attribution='&copy; OpenStreetMap contributors'
+                attribution="&copy; OpenStreetMap contributors"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
 
-              {showRoute && (
+              <FitMap points={points} />
+
+              {showTrack && positions.length > 1 && (
                 <Polyline
-                  positions={sampleRoute}
+                  positions={positions}
                   pathOptions={{
                     color: "#22c55e",
-                    weight: 5,
+                    weight: 3,
                   }}
                 />
               )}
 
               {showGPS &&
-                gpsPoints.map((point, index) => (
+                positions.map((point, index) => (
                   <CircleMarker
                     key={index}
                     center={point}
-                    radius={6}
+                    radius={4}
                     pathOptions={{
                       color: "#fff",
                       fillColor: "#38bdf8",
-                      fillOpacity: 1,
-                      weight: 2,
+                      fillOpacity: 0.9,
+                      weight: 1,
                     }}
                   />
                 ))}
@@ -186,10 +291,12 @@ export default function App() {
 
           <div className="map-legend">
             <span>
-              <i className="legend-dot gps" /> GPS Observations
+              <i className="legend-dot gps" />
+              GPS Observations
             </span>
             <span>
-              <i className="legend-dot route" /> Demo Route
+              <i className="legend-dot route" />
+              GPS Trace (not map-matched)
             </span>
           </div>
         </section>
