@@ -68,3 +68,6 @@ secrets/
 !configs/split.json
 !outputs/inventory/trip_inventory.csv
 !outputs/results/experiments.csv
+
+# Fitted model artifacts (regenerate with src/pathsnap/models/train_*.py)
+artifacts/models/*.joblib
