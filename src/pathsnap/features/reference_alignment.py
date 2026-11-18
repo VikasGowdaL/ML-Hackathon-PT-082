@@ -17,8 +17,10 @@ def align_reference_route(trip):
         reference_arc_id.
     """
 
-    if trip.partition != "train":
-        raise ValueError("Only training trips can be aligned.")
+    # train: labels for fitting; student_test: labels for development evaluation only.
+    # Evaluator trips are never aligned.
+    if trip.partition not in ("train", "student_test"):
+        raise ValueError("Only train and student_test trips can be aligned.")
 
     if trip.route is None or len(trip.route) == 0:
         raise ValueError("Reference route is missing.")
