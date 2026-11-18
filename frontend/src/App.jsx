@@ -283,17 +283,10 @@ export default function App() {
               </select>
 
               <button
+                type="button"
+                className="predict-button"
                 onClick={runPrediction}
                 disabled={!selectedTrip || predicting || loading}
-                style={{
-                  background: predicting ? "#334155" : "#f59e0b",
-                  color: "#0f172a",
-                  fontWeight: 600,
-                  padding: "10px 16px",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: predicting ? "wait" : "pointer",
-                }}
               >
                 {predicting ? "Predicting…" : "Predict Route"}
               </button>
@@ -331,13 +324,15 @@ export default function App() {
             </div>
           </div>
 
-          {error && (
-            <p style={{ color: "#f87171" }}>{error}</p>
-          )}
+          {error && <p className="prediction-error">{error}</p>}
 
           {loading && <p>Loading GPS trip...</p>}
-          {predicting && <p>Running candidate generation, ML scoring and Viterbi decoding…</p>}
-          {predictError && <p style={{ color: "#f87171" }}>{predictError}</p>}
+          {predicting && (
+            <p className="prediction-notice">
+              Laptop 1 is running candidate generation, ML scoring and Viterbi decoding for trip {selectedTrip}…
+            </p>
+          )}
+          {predictError && <p className="prediction-error">{predictError}</p>}
 
           {!loading && !error && trips.length === 0 && (
             <p>No local GPS trips were found.</p>
@@ -388,7 +383,7 @@ export default function App() {
                   <Polyline
                     key={`route-${i}`}
                     positions={section}
-                    pathOptions={{ color: "#f59e0b", weight: 5, opacity: 0.9 }}
+                    pathOptions={{ color: "#a855f7", weight: 5, opacity: 0.9 }}
                   />
                 ))}
 
@@ -419,57 +414,67 @@ export default function App() {
               GPS Trace (not map-matched)
             </span>
             <span>
-              <i className="legend-dot" style={{ background: "#f59e0b" }} />
+              <i className="legend-dot predicted" />
               Predicted Route (ML + HMM)
             </span>
             <span>
-              <i className="legend-dot" style={{ background: "#22c55e" }} /> Start
-              <i className="legend-dot" style={{ background: "#ef4444", marginLeft: 10 }} /> End
+              <i className="legend-dot start" />
+              Start
+            </span>
+            <span>
+              <i className="legend-dot end" />
+              End
             </span>
           </div>
 
           {prediction && (
-            <div style={{ marginTop: 20 }}>
-              <h2>Prediction Results — trip {prediction.trip_id}</h2>
+            <div className="prediction-panel">
+              <div className="prediction-heading">
+                <h2>Prediction Results — trip {prediction.trip_id}</h2>
+                <span>
+                  {prediction.partition} · {prediction.gps_count} GPS points
+                  {prediction.cached ? " · cached" : ""}
+                </span>
+              </div>
               {metrics ? (
-                <section className="stats-grid">
-                  <div className="stat-card">
+                <section className="prediction-metrics">
+                  <div className="prediction-metric">
                     <span>Route accuracy (F1, by length)</span>
                     <strong>{pct(metrics.route_f1)}</strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>Precision / Recall</span>
                     <strong>
                       {pct(metrics.route_precision)} / {pct(metrics.route_recall)}
                     </strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>GPS points on true route (ML + HMM)</span>
                     <strong>{pct(metrics.points_on_route)}</strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>GPS points on true route (ML only)</span>
                     <strong>{pct(metrics.points_on_route_ml_only)}</strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>Predicted / true route length</span>
                     <strong>
                       {metrics.predicted_route_km.toFixed(2)} / {metrics.reference_route_km.toFixed(2)} km
                     </strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>Route sections / gaps</span>
                     <strong>
                       {metrics.route_sections} / {metrics.unbridged_breaks}
                     </strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>Processing time</span>
                     <strong>
                       {prediction.timing_s.total_s.toFixed(2)} s{prediction.cached ? " (cached)" : ""}
                     </strong>
                   </div>
-                  <div className="stat-card">
+                  <div className="prediction-metric">
                     <span>Predicted arcs</span>
                     <strong>{prediction.predicted_arc_count}</strong>
                   </div>
@@ -477,7 +482,7 @@ export default function App() {
               ) : (
                 <p>No reference route is available on the server for this trip, so no accuracy is shown.</p>
               )}
-              <p style={{ color: "#94a3b8", fontSize: 13 }}>
+              <p className="prediction-notice" style={{ color: "#94a3b8", marginTop: 14 }}>
                 Model: {prediction.model.estimator} · Decoder: {prediction.model.decoder}. The reference route is
                 used only by the server to compute these scores after prediction.
               </p>

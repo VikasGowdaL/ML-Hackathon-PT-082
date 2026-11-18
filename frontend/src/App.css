@@ -255,3 +255,24 @@ nav {
     font-size: 16px;
   }
 }
+
+/* Prediction UI styles (Vikas Gowda L, from feature/prediction-frontend) */
+.map-controls { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.predict-button { background: #2563eb; color: #fff; border: 1px solid #3b82f6; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.predict-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.predict-button:not(:disabled):hover { background: #1d4ed8; }
+.prediction-error { color: #f87171; font-size: 13px; }
+.prediction-notice { color: #93c5fd; font-size: 13px; }
+.legend-dot.predicted { background: #a855f7; }
+.legend-dot.bridge { background: #fb923c; }
+.map-legend { flex-wrap: wrap; }
+.prediction-panel { margin-top: 20px; background: #111c2f; border: 1px solid #243248; border-radius: 14px; padding: 20px; }
+.prediction-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.prediction-heading h2 { margin: 0; font-size: 18px; }
+.prediction-heading span { color: #94a3b8; font-size: 12px; }
+.prediction-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.prediction-metric { background: #0f172a; border: 1px solid #243248; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.prediction-metric span { color: #94a3b8; font-size: 12px; }
+.prediction-metric strong { font-size: 20px; overflow-wrap: anywhere; }
+.legend-dot.start { background: #22c55e; }
+.legend-dot.end { background: #ef4444; }
