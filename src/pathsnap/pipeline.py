@@ -210,7 +210,8 @@ def score_prediction(pred: Prediction, reference_route: np.ndarray) -> Dict[str,
       was found).
     * arc_precision / arc_recall: the same, counted in arcs.
     * points_on_route: share of ALL GPS points whose Viterbi arc is part of the reference route
-      (points without a prediction count as wrong).
+      (points without a prediction count as wrong). points_on_route_ml_only: the same for the model's
+      highest-probability arc per point (no HMM), to show what Viterbi adds.
     """
     f, t = pred.arcs["from_node_id"].to_numpy(), pred.arcs["to_node_id"].to_numpy()
     lon, lat = pred.nodes["lon"].to_numpy(), pred.nodes["lat"].to_numpy()
@@ -224,7 +225,10 @@ def score_prediction(pred: Prediction, reference_route: np.ndarray) -> Dict[str,
     ref_set = set(R.tolist())
     pa = pred.observations["predicted_arc_id"]
     on = pa.notna() & pa.fillna(-1).astype(np.int64).isin(ref_set)
+    ml = pd.to_numeric(pred.observations.get("top1_arc_id", pd.Series(dtype=float)), errors="coerce")
+    on_ml = ml.notna() & ml.fillna(-1).astype(np.int64).isin(ref_set)
     return {
+        "points_on_route_ml_only": float(on_ml.mean()) if len(on_ml) else 0.0,
         "route_precision": float(prec),
         "route_recall": float(rec),
         "route_f1": float(2 * prec * rec / (prec + rec)) if prec + rec else 0.0,
