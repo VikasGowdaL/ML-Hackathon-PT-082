@@ -140,3 +140,19 @@ Following the project plan, Milestone 2 focuses on candidate extraction and feat
 4. **Sequence Features plus Assembly (Person 4)**: Consecutive GPS delta times ($\Delta t$), speed estimates, topological transition connectivity between candidate arcs, and assembling tabular datasets for candidate ranking.
 
 *(HMM transition/emission decoding and API deployment are scheduled for subsequent milestones).*
+
+---
+
+## 6. Two-Laptop Deployment (API on Laptop 1, UI on Laptop 2)
+
+```bash
+# Laptop 1 (API) - binds 0.0.0.0:8000 and prints its LAN address
+python scripts/run_api.py
+
+# Laptop 2 (UI) - point the UI at Laptop 1, then start it
+cd frontend
+cp .env.example .env.local      # set VITE_API_URL=http://<Laptop 1 IP>:8000
+npm ci && npm run dev           # open http://localhost:5173  (or ...:5173/?api=http://<Laptop 1 IP>:8000)
+```
+
+Firewall rule, CORS options, pre-demo checks and troubleshooting: [`docs/deployment.md`](docs/deployment.md).

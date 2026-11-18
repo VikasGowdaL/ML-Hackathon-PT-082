@@ -1,5 +1,6 @@
 
 import json
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,11 +10,33 @@ from pathsnap.utils.config import get_path, get_raw_data_dir
 
 app = FastAPI(title="PathSnap API", version="0.1.0")
 
+# --- CORS (two-laptop deployment) -------------------------------------------------------------
+# The UI may run on another machine (Laptop 2) and call this API on Laptop 1 over the LAN.
+# Default: allow the local dev UI plus any origin on a private network address (192.168.x.x,
+# 10.x.x.x, 172.16-31.x.x) on any port. Override with PATHSNAP_CORS_ORIGINS, a comma-separated list
+# of exact origins (e.g. "http://192.168.1.20:5173"), or "*" to allow every origin.
+LOCAL_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+PRIVATE_LAN_ORIGIN_REGEX = (
+    r"^https?://(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$"
+)
+
+
+def cors_settings() -> dict:
+    """CORS options from the PATHSNAP_CORS_ORIGINS environment variable (see module comment)."""
+    raw = os.environ.get("PATHSNAP_CORS_ORIGINS", "").strip()
+    if raw == "*":
+        return {"allow_origins": ["*"], "allow_origin_regex": None}
+    if raw:
+        return {"allow_origins": [o.strip().rstrip("/") for o in raw.split(",") if o.strip()], "allow_origin_regex": None}
+    return {"allow_origins": LOCAL_ORIGINS, "allow_origin_regex": PRIVATE_LAN_ORIGIN_REGEX}
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    **cors_settings(),
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
