@@ -71,3 +71,4 @@ secrets/
 
 # Fitted model artifacts (regenerate with src/pathsnap/models/train_*.py)
 artifacts/models/*.joblib
+!artifacts/models/final_model.joblib

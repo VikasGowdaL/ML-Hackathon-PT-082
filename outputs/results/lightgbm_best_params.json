@@ -1,0 +1,14 @@
+{
+  "best_cv_top1": 0.8454074288740359,
+  "parameters": {
+    "n_estimators": 200,
+    "learning_rate": 0.02601619314451163,
+    "num_leaves": 42,
+    "max_depth": 9,
+    "min_child_samples": 50,
+    "colsample_bytree": 0.7539796407337818,
+    "reg_alpha": 4.813295405891273,
+    "reg_lambda": 0.022880562723446657
+  },
+  "n_completed_trials": 21
+}

@@ -61,3 +61,20 @@ For each GPS point, the **top-1 arc** is the candidate with the highest predicte
 
 Compare `cv_train_<m>_mean` (training part of each fold), `cv_<m>_mean` (validation folds) and `student_<m>`. A large
 train − CV gap indicates overfitting; low values everywhere indicate underfitting.
+
+## Route reconstruction metrics (full pipeline, API)
+
+Computed by `pathsnap.pipeline.score_prediction` **after** prediction; the prediction itself never reads the route.
+
+| Metric | Definition |
+|---|---|
+| `route_precision` | Length of predicted-route arcs that are on the reference route ÷ length of the predicted route (unique arcs) |
+| `route_recall` | Length of reference-route arcs that were predicted ÷ length of the reference route (unique arcs) |
+| `route_f1` | Harmonic mean of the two; shown in the UI as "Route accuracy" |
+| `arc_precision` / `arc_recall` | The same, counted in arcs instead of metres |
+| `points_on_route` | Share of **all** GPS points whose Viterbi arc belongs to the reference route (no prediction = wrong) |
+| `points_on_route_ml_only` | The same for the model's highest-probability arc per point, without the HMM |
+| `route_sections` / `unbridged_breaks` | Number of disconnected pieces of the predicted route / consecutive arcs that could not be joined by a road path ≤ 2 km |
+
+`scripts/evaluate_pipeline.py` additionally reports observation-level Top-1 for ML only and ML + HMM against Person 2's
+aligned reference arc per point (train / student_test only).

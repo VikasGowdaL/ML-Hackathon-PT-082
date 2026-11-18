@@ -46,3 +46,30 @@ def test_cors_env_override(monkeypatch):
     star = TestClient(_app(monkeypatch, "*"))
     assert _preflight(star, "http://anything.example").headers.get("access-control-allow-origin") == "*"
     _app(monkeypatch)  # restore default app for other tests
+
+
+def _real_ready():
+    from pathsnap import pipeline as P
+    return "00000052" in P.trips_index() and P.model_path().exists()
+
+
+def test_eval_trips_and_predict(monkeypatch):
+    if not _real_ready():
+        pytest.skip("raw data or final model not present")
+    monkeypatch.setenv("PATHSNAP_EVAL_PARTITION", "student_test")  # rehearsal mode: no evaluator data needed
+    client = TestClient(_app(monkeypatch))
+    ev = client.get("/api/eval/trips").json()
+    assert ev["partition"] == "student_test" and ev["count"] == 10
+    assert any(t["trip_id"] == "00000052" and t["gps_count"] > 0 for t in ev["trips"])
+
+    r = client.post("/api/predict/00000052")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["gps_count"] == len(body["gps_points"]) > 0
+    assert body["predicted_route"] and all(len(sec) >= 2 for sec in body["predicted_route"])
+    m = body["metrics"]
+    assert 0 < m["route_f1"] <= 1 and 0 <= m["points_on_route"] <= 1 and not body["cached"]
+    assert client.post("/api/predict/00000052").json()["cached"] is True
+    assert client.post("/api/predict/99999999").status_code == 404
+    monkeypatch.delenv("PATHSNAP_EVAL_PARTITION")
+    _app(monkeypatch)

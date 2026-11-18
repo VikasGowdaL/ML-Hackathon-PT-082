@@ -1,0 +1,94 @@
+{
+  "name": "final_model",
+  "estimator": "lightgbm.LGBMClassifier in harness.make_pipeline(scale=False)",
+  "selected_because": "docs/model_selection.md",
+  "parameters": {
+    "n_estimators": 200,
+    "learning_rate": 0.02601619314451163,
+    "num_leaves": 42,
+    "max_depth": 9,
+    "min_child_samples": 50,
+    "colsample_bytree": 0.7539796407337818,
+    "reg_alpha": 4.813295405891273,
+    "reg_lambda": 0.022880562723446657
+  },
+  "class_weight": "balanced",
+  "random_state": 42,
+  "features": [
+    "dist_rank",
+    "n_candidates",
+    "dist_minus_best_m",
+    "dist_ratio_to_best",
+    "dist_to_segment_m",
+    "proj_offset_m",
+    "proj_fraction",
+    "proj_remaining_m",
+    "proj_is_endpoint",
+    "heading_valid",
+    "bearing_diff_deg",
+    "bearing_diff_undirected_deg",
+    "seg_length_m",
+    "arc_is_zero_length",
+    "arc_is_two_way",
+    "arc_parallel_count",
+    "from_in_degree",
+    "from_out_degree",
+    "to_in_degree",
+    "to_out_degree",
+    "arc_in_largest_scc",
+    "arc_wcc_fraction",
+    "dt_prev_s",
+    "dt_next_s",
+    "dist_prev_m",
+    "dist_next_m",
+    "speed_prev_mps",
+    "speed_next_mps",
+    "speed_mps",
+    "accel_mps2",
+    "heading_change_deg",
+    "after_gap",
+    "before_gap",
+    "is_segment_start",
+    "is_segment_end",
+    "implausible_speed"
+  ],
+  "training_data": {
+    "partition": "train",
+    "trips": 80,
+    "rows": 1772015
+  },
+  "bayesian_search": {
+    "best_cv_top1_when_candidate": 0.8454074288740359,
+    "completed_trials": 21,
+    "trials_file": "outputs/results/lightgbm_bayesian_trials.csv"
+  },
+  "student_test_metrics": {
+    "precision": 0.6766895128601961,
+    "recall": 0.959807662154393,
+    "macro_f1": 0.8833940796150621,
+    "accuracy": 0.9522974026753044,
+    "log_loss": 0.12333861899465057,
+    "confusion_matrix": [
+      [
+        172145,
+        8774
+      ],
+      [
+        769,
+        18364
+      ]
+    ],
+    "top1_all_points": 0.8561586638830898,
+    "top1_when_candidate": 0.8573668530810641,
+    "candidate_miss_rate": 0.0014091858037578175,
+    "n_observations": 19160,
+    "n_observations_with_reference_candidate": 19133,
+    "route_continuity": 0.9234424774139641
+  },
+  "fit_time_s": 36.86,
+  "versions": {
+    "lightgbm": "4.5.0",
+    "scikit-learn": "1.5.2"
+  },
+  "exported_at": "2026-11-18T11:17:21.944928+00:00"
+}

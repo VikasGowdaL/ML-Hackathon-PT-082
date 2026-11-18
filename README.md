@@ -119,27 +119,89 @@ ML-Hackathon-PT-082/
 
 ---
 
-## 5. Milestone 2 Split & Next Steps
+## 5. Pipeline, Results and API
 
-Following the project plan, Milestone 2 focuses on candidate extraction and feature engineering:
+### Architecture
 
-1. **Candidate Generation (Person 1 - Completed)**:
-   - Implemented in [`src/pathsnap/features/candidates.py`](file:///Users/aarizdudekula/college2/ml/ML_HACKATHON/ML-Hackathon-PT-082/src/pathsnap/features/candidates.py).
-   - Uses `shapely.STRtree` on segment geometries in metric UTM space (avoids midpoint KD-tree failures on long arcs).
-   - Generates candidate pairs `(trip_id, obs_idx, arc_id, distance_m)` sorted by distance and capped at $k=30$.
-   - Output per-trip parquet files: `outputs/candidates/<radius>/<trip_id>.parquet`.
-   - Summary audit tables: `outputs/candidates/summary_<radius>.csv`.
-   - Full documentation and benchmark timings in [`docs/candidate_generation.md`](file:///Users/aarizdudekula/college2/ml/ML_HACKATHON/ML-Hackathon-PT-082/docs/candidate_generation.md).
-   - Command to reproduce:
-     ```bash
-     python scripts/generate_candidates.py --all-radii
-     ```
+```mermaid
+flowchart LR
+    subgraph L2[Laptop 2 - React UI]
+        UI[Trip list - Predict Route - map - results]
+    end
+    subgraph L1[Laptop 1 - FastAPI]
+        API[/api/eval/trips<br/>/api/predict/trip_id/] --> PIPE[pipeline.predict_trip]
+        PIPE --> LOAD[Load GPS + road network<br/>route withheld]
+        LOAD --> CAND[Candidate arcs<br/>50 m, max 30]
+        CAND --> FEAT[Geometry + sequence features]
+        FEAT --> ML[LightGBM final model<br/>P arc is correct]
+        ML --> VIT[Viterbi decoding]
+        VIT --> REC[Shortest-path route reconstruction]
+        REC --> SCORE[score_prediction<br/>reference route loaded only now]
+    end
+    UI -- trip_id --> API
+    SCORE -- route + metrics --> UI
+```
 
-2. **Labels and Miss Rate (Person 2)**: Ground-truth label assignment from `.route` to candidate arcs, and calculation of candidate recall / miss rate on `train` and `student_test`.
-3. **Geometry Features (Person 3)**: Perpendicular distances, heading alignment, arc lengths, and projected point offsets.
-4. **Sequence Features plus Assembly (Person 4)**: Consecutive GPS delta times ($\Delta t$), speed estimates, topological transition connectivity between candidate arcs, and assembling tabular datasets for candidate ranking.
+### Workflow (offline)
 
-*(HMM transition/emission decoding and API deployment are scheduled for subsequent milestones).*
+```mermaid
+flowchart LR
+    A[data/raw .track .nodes .arcs .route] --> B[Inventory + EDA<br/>notebooks 03-04]
+    B --> C[Candidates + labels + features<br/>scripts/build_feature_table.py]
+    C --> D[5 models, grouped 5-fold CV<br/>src/pathsnap/models/train_*.py]
+    D --> E[Comparison + selection<br/>compare.py, docs/model_selection.md]
+    E --> F[Bayesian tuning LightGBM<br/>bayesian_tune_lightgbm.py]
+    F --> G[Export final model<br/>scripts/export_final_model.py]
+    G --> H[Pipeline evaluation<br/>scripts/evaluate_pipeline.py]
+```
+
+### Results (student-test, 10 trips, never used for training or selection)
+
+| Stage | Result |
+|---|---|
+| Candidate scorers (grouped 5-fold CV Top-1, true arc among candidates) | Random Forest 0.846, MLP 0.843, LightGBM 0.843, Logistic Regression 0.840, KNN 0.823 — see `outputs/results/model_comparison.csv` |
+| Final model | LightGBM, Bayesian-tuned (CV Top-1 0.8454); choice explained in [`docs/model_selection.md`](docs/model_selection.md) |
+| ML only → ML + HMM, Top-1 over all GPS points | 0.856 → **0.876** |
+| Consecutive predicted arcs connected | 0.924 → **0.996** |
+| Reconstructed route vs true route (by length) | F1 **0.933**, precision 0.886, recall 0.990 |
+| Prediction time per trip | 0.85 s mean, 1.9 s max |
+
+### Reproduce
+
+```bash
+python scripts/build_feature_table.py                 # ~2-3 min, writes outputs/features/*.parquet
+python -m pathsnap.models.train_logistic_regression   # likewise train_random_forest, train_knn, train_lightgbm, train_mlp
+python -m pathsnap.models.compare                     # outputs/results/model_comparison.csv + figures
+python -m pathsnap.models.bayesian_tune_lightgbm      # Optuna search (slow)
+python scripts/export_final_model.py                  # artifacts/models/final_model.joblib (also committed)
+python scripts/evaluate_pipeline.py                   # full pipeline on student_test
+pytest -q
+```
+
+### API endpoints
+
+Interactive docs: `http://<api-host>:8000/docs`.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/health` | Status, whether the model file exists, evaluation partition and trip count |
+| GET | `/api/eval/trips` | Trips of the evaluation partition (`evaluator_test`; `PATHSNAP_EVAL_PARTITION=student_test` for rehearsals) |
+| GET | `/api/trips` | Train / student-test / evaluation trips available on the server |
+| GET | `/api/trips/{trip_id}` | GPS points and network size of one trip (never the route) |
+| POST | `/api/predict/{trip_id}` | Predicted route sections (`[[lat, lon], ...]`), GPS points, metrics (route F1 / precision / recall, points on route for ML + HMM and ML only), timing; cached per trip |
+
+Evaluation trips go in `data/raw/evaluator_test/<trip_id>/` on the API laptop (git-ignored) with their IDs under
+`evaluator_test` in `configs/split.json`. Prediction never reads `.route`; the API loads it afterwards only to compute
+the metrics.
+
+### Known limitations
+
+* Viterbi transitions only distinguish same / connected / disconnected arcs (fixed penalties); they ignore road
+  distance vs GPS distance and travel direction, and the penalties are untuned.
+* Points with no arc within 50 m get no prediction (route section breaks); trips whose GPS is offset from the map
+  (e.g. training trips 00000054, 00000033) score poorly.
+* Balanced class weights inflate probabilities; Viterbi uses them as relative scores.
+* GPS problems (gaps, implausible speeds, duplicates) are flagged, not removed; only gap flags affect decoding.
 
 ---
 
