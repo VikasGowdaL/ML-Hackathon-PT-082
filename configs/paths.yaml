@@ -1,0 +1,13 @@
+# PathSnap Path Configurations
+# Paths can be relative to the repository root or absolute paths.
+# Any path can be overridden by setting the corresponding environment variable:
+# e.g., RAW_DATA_DIR overrides raw_data_dir.
+
+raw_data_dir: "data/raw"
+cache_dir: "data/cache"
+inventory_dir: "outputs/inventory"
+results_dir: "outputs/results"
+maps_dir: "outputs/maps"
+plots_dir: "outputs/plots"
+split_file: "configs/split.json"
+experiments_log: "outputs/results/experiments.csv"

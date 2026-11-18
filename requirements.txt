@@ -1,0 +1,36 @@
+# PathSnap - Cross-Platform Core Dependencies
+# Pinned to stable ranges with pre-built binary wheels for both Windows & macOS (x86_64 and arm64)
+
+# Core numeric & data manipulation
+numpy>=1.26.0,<2.1.0
+pandas>=2.1.0,<2.3.0
+scipy>=1.11.0,<1.15.0
+pyarrow>=14.0.0,<18.0.0
+
+# Geospatial & Graph
+pyproj>=3.6.0,<3.8.0
+shapely>=2.0.0,<2.1.0
+networkx>=3.1.0,<3.5.0
+
+# Machine Learning & Optimization
+scikit-learn>=1.3.0,<1.6.0
+lightgbm>=4.1.0,<4.6.0
+xgboost>=2.0.0,<2.2.0
+optuna>=3.4.0,<4.1.0
+joblib>=1.3.0,<1.5.0
+
+# Visualization & Progress
+matplotlib>=3.8.0,<3.10.0
+seaborn>=0.13.0,<0.14.0
+folium>=0.15.0,<0.18.0
+tqdm>=4.66.0,<4.68.0
+
+# Config & Web / API
+pyyaml>=6.0.0,<6.1.0
+fastapi>=0.109.0,<0.116.0
+uvicorn[standard]>=0.27.0,<0.33.0
+requests>=2.31.0,<2.33.0
+
+# Development, Notebooks & Testing
+jupyter>=1.0.0,<1.2.0
+pytest>=7.4.0,<8.4.0
