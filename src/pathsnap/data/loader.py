@@ -5,8 +5,8 @@ Supports:
 - Reading .track, .nodes, .arcs, .route per the data specification.
 - Validation of columns, data types, and row indices.
 - Metric UTM coordinate projection via pyproj based on the dataset bounding box.
-- Parquet/pickle disk caching in data/cache (gitignored).
-- Evaluator partition leakage prevention guardrails.
+- Parquet/pickle disk caching in data/cache (gitignored) with automatic version invalidation.
+- Evaluator partition leakage prevention guardrails (for future evaluation runs).
 """
 
 from __future__ import annotations
@@ -15,18 +15,23 @@ import json
 import logging
 import os
 import pickle
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
+
 try:
     import pyproj
 except ImportError:
     pyproj = None
 
 from pathsnap.utils.config import get_path, get_raw_data_dir
+
+# Invalidate pickled caches whenever loader schema or projection logic changes
+LOADER_VERSION = "1.2.0"
 
 logger = logging.getLogger("pathsnap.data.loader")
 if not logger.handlers:
@@ -65,6 +70,27 @@ class TripData:
         }
 
 
+def clear_cache(cache_dir: Optional[Path | str] = None) -> int:
+    """Purge all cached trip files in the cache directory."""
+    if cache_dir is None:
+        target = get_path("cache_dir", default="data/cache")
+    else:
+        target = Path(cache_dir)
+
+    if not target.exists():
+        return 0
+
+    count = 0
+    for p in target.glob("*.pkl"):
+        try:
+            p.unlink()
+            count += 1
+        except OSError:
+            pass
+    logger.info(f"Cleared {count} cache files from {target}")
+    return count
+
+
 def compute_utm_epsg(lon_min: float, lat_min: float, lon_max: float, lat_max: float) -> str:
     """Compute the optimal UTM EPSG string for a given longitude/latitude bounding box.
 
@@ -73,9 +99,14 @@ def compute_utm_epsg(lon_min: float, lat_min: float, lon_max: float, lat_max: fl
     because 1 degree of longitude scales with cos(latitude) (e.g. at 45°N, 1° lon is ~78.8 km,
     while 1° lat is ~111.1 km).
     Universal Transverse Mercator (UTM) provides a conformal, low-distortion Cartesian metric
-    coordinate system (x, y in meters) within 6-degree longitudinal zones. This enables
-    exact distance computations (arc lengths, GPS point-to-arc perpendicular distances in meters)
-    which are required by HMM Gaussian emission probabilities and transition network routing.
+    coordinate system (x, y in meters) within 6-degree longitudinal zones.
+
+    Boundary Behavior:
+    For trips spanning a 6-degree UTM zone boundary (e.g. Trip 00000011 across 60°E between zones
+    40 and 41, or Trip 00000097 across 12°E between zones 32 and 33), the zone is selected from
+    the bounding box center. Transverse Mercator projections remain mathematically continuous and
+    accurate beyond the central 6° width (scale error is <0.1% within 0.5° of the edge),
+    ensuring a unified, unfragmented metric plane across the entire trip and its road network.
     """
     center_lon = (lon_min + lon_max) / 2.0
     center_lat = (lat_min + lat_max) / 2.0
@@ -136,23 +167,17 @@ def discover_trips(raw_dir: Optional[Path | str] = None) -> Dict[str, Dict[str, 
         logger.warning(f"Raw data directory does not exist: {raw_path}")
         return trips
 
-    # Pattern search across raw directory
-    # Find all .track files first, as every valid trip must contain a .track
     track_files = list(raw_path.rglob("*.track"))
 
     for track_file in track_files:
         trip_name = track_file.stem
         parent_dir = track_file.parent
 
-        # Trip ID heuristic:
-        # If the parent folder is named after the trip (e.g. data/raw/trip_01/track.track or data/raw/01/01.track)
-        # or if file name is trip_01.track
         if trip_name.lower() in ("track", "data", "points"):
             trip_id = parent_dir.name
         else:
             trip_id = trip_name
 
-        # Look for sibling or relative nodes, arcs, route files
         nodes_candidates = [
             parent_dir / f"{track_file.stem}.nodes",
             parent_dir / "nodes.nodes",
@@ -226,7 +251,6 @@ def _read_nodes(path: Path) -> pd.DataFrame:
     if df.shape[1] != 2:
         raise ValueError(f"Nodes file must have exactly 2 columns (lon, lat), got {df.shape[1]} in {path}")
 
-    # Add explicit 0-based node_id
     df["node_id"] = np.arange(len(df), dtype=np.int64)
     df = df[["node_id", "lon", "lat"]]
     return df
@@ -253,7 +277,6 @@ def _read_arcs(path: Path) -> pd.DataFrame:
     if df.shape[1] != 2:
         raise ValueError(f"Arcs file must have exactly 2 columns (from_node_id, to_node_id), got {df.shape[1]} in {path}")
 
-    # Add explicit 0-based arc_id
     df["arc_id"] = np.arange(len(df), dtype=np.int64)
     df = df[["arc_id", "from_node_id", "to_node_id"]]
     return df
@@ -294,24 +317,33 @@ def load_trip(
     - Applies UTM projection dynamically based on the trip's geographic bounding box
     - Evaluator leakage prevention: blocks loading .route for evaluator partition unless
       explicitly permitted by allow_evaluator_labels=True.
+    - Cache invalidation: invalidates cache if stored LOADER_VERSION does not match.
     """
-    # Check cache first
     cache_dir = get_path("cache_dir", default="data/cache")
     cache_file = cache_dir / f"{trip_id}.pkl"
 
+    norm_partition = partition.strip().lower().replace("-", "_") if partition else None
+    is_evaluator = norm_partition in ("evaluator_test", "evaluator_testing", "evaluator")
+
+    # Check cache first
     if use_cache and cache_file.exists():
         try:
             with open(cache_file, "rb") as f:
                 trip_data: TripData = pickle.load(f)
-            # Apply evaluator guard even on cached objects
-            if trip_data.partition in ("evaluator", "evaluator-testing", "evaluator_test"):
-                if not allow_evaluator_labels:
-                    trip_data.route = None
-                else:
-                    logger.warning(
-                        f"[DATA LEAKAGE WARNING] Evaluator ground-truth label loaded for trip '{trip_id}'!"
-                    )
-            return trip_data
+
+            # Invalidate if loader version or schema changed
+            cached_ver = trip_data.metadata.get("loader_version")
+            if cached_ver == LOADER_VERSION:
+                if is_evaluator:
+                    if not allow_evaluator_labels:
+                        trip_data.route = None
+                    else:
+                        logger.warning(
+                            f"[DATA LEAKAGE WARNING] Evaluator ground-truth label loaded for trip '{trip_id}'!"
+                        )
+                return trip_data
+            else:
+                logger.debug(f"Cache version mismatch for trip {trip_id} ({cached_ver} != {LOADER_VERSION}). Reloading.")
         except Exception as e:
             logger.warning(f"Failed reading cache for trip {trip_id}: {e}. Reloading from raw files.")
 
@@ -346,7 +378,6 @@ def load_trip(
         raise ValueError(f"Trip {trip_id}: arcs table contains invalid to_node_id out of node range.")
 
     # Guard evaluator labels
-    is_evaluator = partition in ("evaluator", "evaluator-testing", "evaluator_test")
     route_arr: Optional[np.ndarray] = None
 
     if route_path and route_path.exists():
@@ -365,7 +396,6 @@ def load_trip(
             if len(route_arr) > 0 and ((route_arr > max_arc_id).any() or (route_arr < 0).any()):
                 raise ValueError(f"Trip {trip_id}: route contains invalid arc_id out of arcs range.")
 
-    # Compute bounding box and UTM projection
     utm_crs = None
     track_utm = None
     nodes_utm = None
@@ -377,7 +407,6 @@ def load_trip(
                 "Install requirements.txt to enable metric coordinates."
             )
         else:
-            # Bounding box of both track and network nodes
             min_lon = float(min(track_df["lon"].min(), nodes_df["lon"].min()))
             max_lon = float(max(track_df["lon"].max(), nodes_df["lon"].max()))
             min_lat = float(min(track_df["lat"].min(), nodes_df["lat"].min()))
@@ -393,7 +422,7 @@ def load_trip(
 
     trip_data = TripData(
         trip_id=trip_id,
-        partition=partition,
+        partition=norm_partition,
         track=track_df,
         nodes=nodes_df,
         arcs=arcs_df,
@@ -406,10 +435,10 @@ def load_trip(
             "nodes_file": str(nodes_path),
             "arcs_file": str(arcs_path),
             "route_file": str(route_path) if route_path else None,
+            "loader_version": LOADER_VERSION,
         },
     )
 
-    # Save to cache if enabled
     if use_cache:
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -429,14 +458,12 @@ def get_trips(
     use_cache: bool = True,
     project_utm: bool = True,
 ) -> List[TripData]:
-    """Retrieve all trips belonging to a specific partition ('train', 'student-test', 'evaluator-testing').
+    """Retrieve all trips belonging to a specific partition ('train', 'student_test', 'evaluator_test').
 
-    Enforces data leakage guard:
-    - If partition is evaluator-testing (or 'evaluator'), ground-truth labels (.route)
-      are NEVER loaded unless allow_evaluator_labels=True is explicitly supplied.
-    - When allow_evaluator_labels=True, a prominent warning is logged.
+    Enforces uniform underscore partition naming and evaluator data leakage guard.
     """
-    norm_part = partition.strip().lower()
+    # Normalize input partition to underscores
+    norm_part = partition.strip().lower().replace("-", "_")
 
     if split_file is None:
         split_path = get_path("split_file", default="configs/split.json")
@@ -451,21 +478,21 @@ def get_trips(
     with open(split_path, "r", encoding="utf-8") as f:
         split_data = json.load(f)
 
-    # Normalize partition keys
     target_ids: List[str] = []
     matched_key = None
     for key, ids in split_data.items():
-        if key.lower().replace("-", "_") == norm_part.replace("-", "_"):
+        if key.lower().replace("-", "_") == norm_part:
             target_ids = ids
             matched_key = key
             break
 
     if matched_key is None:
         raise ValueError(
-            f"Partition '{partition}' not found in split file. Available keys: {list(split_data.keys())}"
+            f"Partition '{partition}' (normalized: '{norm_part}') not found in split file. "
+            f"Available keys: {list(split_data.keys())}"
         )
 
-    is_eval = norm_part in ("evaluator", "evaluator-testing", "evaluator_test", "test_evaluator")
+    is_eval = norm_part in ("evaluator_test", "evaluator_testing", "evaluator")
     if is_eval:
         if not allow_evaluator_labels:
             logger.info("Guard active: evaluator ground-truth routes are withheld.")
@@ -481,7 +508,7 @@ def get_trips(
             trip_id=str(trip_id),
             raw_dir=raw_dir,
             trips_index=trips_index,
-            partition=matched_key,
+            partition=norm_part,
             allow_evaluator_labels=allow_evaluator_labels,
             use_cache=use_cache,
             project_utm=project_utm,

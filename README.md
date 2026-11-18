@@ -1,7 +1,7 @@
 # PathSnap 🛰️🗺️
-> **Map-matching noisy GPS trips to a road network and HMM/Viterbi route reconstruction**
+> **Map-matching noisy GPS trips to a road network and route reconstruction**
 
-PathSnap reconstructs high-fidelity road routes from sparse, noisy GPS trajectory points (~1 Hz) by projecting geographic coordinates to metric UTM space, matching candidates to road network arcs, and decoding sequence trajectories using Hidden Markov Models (HMM) and Viterbi dynamic programming.
+PathSnap reconstructs high-fidelity road routes from sparse, noisy GPS trajectory points (~1 Hz) by projecting geographic coordinates to metric UTM space, generating candidate road arcs, extracting geometric and sequence features, and decoding ground-truth trajectories.
 
 ---
 
@@ -31,127 +31,86 @@ This automatically creates `.venv`, upgrades `pip`, installs `requirements.txt`,
   ```powershell
   .venv\Scripts\Activate.ps1
   ```
-  *(If PowerShell displays an execution policy error, run: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`)*
 - **Windows (Command Prompt)**:
   ```cmd
   .venv\Scripts\activate.bat
   ```
 
-### Manual Setup (Alternative)
-If you prefer setting up manually:
-
-**macOS / Linux:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
-pip install -e .
-```
-
-**Windows (PowerShell):**
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
-pip install -e .
-```
-
 ---
 
-## 2. Configuring Raw Data Location (`RAW_DATA_DIR`)
+## 2. Dataset Partitions & Leakage Governance
 
-You can place raw trip data in the default directory `data/raw/` (git-ignored) or point to an external folder without modifying code:
+The benchmark comprises 100 trips in 3 partitions:
+- **80 train** (`train`): Located in `data/raw/train/` (80 trip subdirectories `00000001` through `00000099`).
+- **10 student-test** (`student_test`): Located in `data/raw/student_test/` (10 trip subdirectories `00000000`, `00000007`, `00000009`, `00000040`, `00000052`, `00000056`, `00000065`, `00000076`, `00000077`, `00000091`).
+- **The evaluator 10 held by the organisers** (`evaluator_test`): We do not have the evaluator trips; they will be provided for the final evaluation demo only. The guard in `get_trips("evaluator_test")` is implemented for that future case to strictly withhold `.route` ground truth.
 
-- **Option A: Environment Variable (Recommended for different machines)**
-  - **macOS / Linux (zsh/bash)**:
-    ```bash
-    export RAW_DATA_DIR="/path/to/my/raw/data"
-    ```
-  - **Windows (PowerShell)**:
-    ```powershell
-    $env:RAW_DATA_DIR = "C:\path\to\my\raw\data"
-    ```
-  - **Windows (CMD)**:
-    ```cmd
-    set RAW_DATA_DIR=C:\path\to\my\raw\data
-    ```
+Partition names are uniformly standardized with underscores: `train`, `student_test`, and `evaluator_test`.
 
-- **Option B: `configs/paths.yaml`**
-  Edit `configs/paths.yaml`:
-  ```yaml
-  raw_data_dir: "data/raw" # or "/absolute/path/to/raw/data"
-  ```
+### Leakage Rules
+1. **Strict Partition Disjointness**: A trip ID must never appear in more than one partition.
+2. **Evaluator Isolation**: Evaluator data and `.route` ground truth labels must **NEVER** be used for training, feature extraction, model selection, or tuning.
+3. **Student Code Isolation**: Evaluator ground truth must stay completely out of any student-side prediction code or UI.
+4. **Preprocessing Guard**: All learned parameters (e.g. noise distributions, scalers, candidate thresholds) must be fit on training trips only.
+5. **Programmatic Guard**:
+   ```python
+   from pathsnap.data.loader import get_trips
+
+   # Safe: route labels are withheld by default for evaluator_test
+   eval_trips = get_trips("evaluator_test", allow_evaluator_labels=False)
+   ```
 
 ---
 
 ## 3. Dataset Inventory and Splitting
 
-To scan raw trips, compute temporal/spatial statistics, generate the 80/10/10 split, and produce `outputs/inventory/trip_inventory.csv`:
+To scan raw trips, compute temporal/spatial statistics, and verify `configs/split.json`:
 
 ```bash
-# Run with default or configured raw data directory
+# Run inventory builder
 python scripts/build_inventory.py
 
-# Or specify a custom raw data path directly
-python scripts/build_inventory.py --raw-dir /path/to/raw/data --seed 42
+# Optional: purge cache before building
+python scripts/build_inventory.py --clear-cache
 ```
 
-Outputs created:
-- `outputs/inventory/trip_inventory.csv`: One row per trip containing point counts, time gaps, bounding box, network size, and missing file checks.
-- `configs/split.json`: Strictly disjoint partitions (`train`: 80 trips, `student-test`: 10 trips, `evaluator-testing`: 10 trips). Contains **trip IDs only** (never labels).
+Outputs:
+- `outputs/inventory/trip_inventory.csv`: One row per trip with file sizes, point counts, time gaps, bounding box, network sizes, and fractional timestamp flags.
+- `configs/split.json`: Strictly disjoint partitions (`train`, `student_test`, `evaluator_test`). Contains **trip IDs only** (zero labels).
 
 ---
 
-## 4. Leakage Rules & Data Governance
+## 4. Repository Directory Layout
 
-1. **Strict Partition Disjointness**: A trip ID must never appear in more than one partition.
-2. **Evaluator Isolation**: Evaluator data and `.route` ground truth labels must **NEVER** be used for training, feature extraction, model selection, or tuning.
-3. **Student Code Isolation**: Evaluator ground truth must stay completely out of any student-side prediction code, CLI tools, or web UI.
-4. **Preprocessing Guard**: All learned parameters (e.g. noise distributions, speed priors, normalizations) must be fit on training trips only.
-5. **Programmatic Guard**:
-   ```python
-   from pathsnap.data.loader import get_trips
-
-   # Safe: route labels are withheld by default for evaluator-testing
-   eval_trips = get_trips("evaluator-testing", allow_evaluator_labels=False)
-   assert eval_trips[0].route is None
-   ```
-
----
-
-## 5. Repository Directory Layout
-
-```
+```text
 ML-Hackathon-PT-082/
 ├── configs/
 │   ├── paths.yaml              # Central path configuration
-│   └── split.json              # 80/10/10 train/student-test/evaluator trip IDs
+│   └── split.json              # 80 train / 10 student_test / evaluator_test trip IDs
 ├── data/
 │   ├── README.md               # Raw file format specifications and partition rules
-│   ├── raw/                    # (Git-ignored) Local raw trip data (.track, .nodes, .arcs, .route)
-│   └── cache/                  # (Git-ignored) Fast serialized parquet/pickle caches
+│   ├── raw/                    # (Git-ignored) Local raw trip data (train/ and student_test/)
+│   └── cache/                  # (Git-ignored) Version-invalidated serialized caches
 ├── docs/
-│   └── data_quality_log.md     # Anomaly and decision log
+│   └── data_quality_log.md     # Anomaly, projection, and data quality log
 ├── notebooks/                  # EDA, map visualizations, error analysis notebooks
 ├── outputs/
 │   ├── inventory/              # trip_inventory.csv
-│   ├── maps/                   # Folium HTML trajectory overlays
+│   ├── maps/                   # Trajectory overlays
 │   ├── plots/                  # Visual evaluation plots
 │   └── results/                # Evaluation metrics and experiments.csv
 ├── scripts/
 │   └── build_inventory.py      # Scan dataset, compute stats, and manage split
 ├── src/
 │   └── pathsnap/
-│       ├── api/                # FastAPI service endpoints
+│       ├── api/                # Future milestone: Serving & API endpoints
 │       ├── data/               # loader.py, UTM projection, validation, caching
-│       ├── features/           # Spatial, temporal, and candidate arc feature engineering
-│       ├── hmm/                # Emission/transition probabilities and Viterbi decoder
-│       ├── models/             # Candidate ranking models (LightGBM/XGBoost/heuristics)
+│       ├── features/           # Milestone 2: Geometric & sequence features
+│       ├── hmm/                # Future milestone: HMM transition & emission decoders
+│       ├── models/             # Milestone 2: Candidate ranking & scoring
 │       └── utils/              # config.py, experiment_log.py
 ├── tests/                      # pytest test suite
-├── .gitignore                  # Comprehensive gitignore for ML & cross-platform artifacts
+├── .gitignore                  # Gitignore for raw data, caches, and build artifacts
 ├── pyproject.toml              # Modern Python packaging (pip install -e .)
 ├── requirements.txt            # Pinned cross-platform dependencies
 ├── setup_env.py                # Pure Python cross-platform venv setup
@@ -160,9 +119,13 @@ ML-Hackathon-PT-082/
 
 ---
 
-## 6. Running Tests
+## 5. Milestone 2 Split & Next Steps
 
-```bash
-pytest -v
-```
-All unit tests verify loader contracts, coordinate projections to UTM, partition disjointness, and evaluator label guards.
+Following the project plan, Milestone 2 focuses on candidate extraction and feature engineering:
+
+1. **Candidate Generation**: Spatial indexing (`cKDTree` / `STRtree`) to query candidate road arcs within radius $r$ around GPS points in metric UTM coordinates.
+2. **Labels and Miss Rate**: Ground-truth label assignment from `.route` to candidate arcs, and calculation of candidate recall / miss rate on `train` and `student_test`.
+3. **Geometry Features**: Perpendicular distances, heading alignment, arc lengths, and projected point offsets.
+4. **Sequence Features plus Assembly**: Consecutive GPS delta times ($\Delta t$), speed estimates, topological transition connectivity between candidate arcs, and assembling tabular datasets for candidate ranking.
+
+*(HMM transition/emission decoding and API deployment are scheduled for subsequent milestones).*

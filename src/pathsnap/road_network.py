@@ -206,13 +206,25 @@ def load_road_network(
 
 
 def load_split(split_file: Optional[Path | str] = None) -> Dict[str, List[str]]:
-    """Read ``configs/split.json`` (trip IDs per partition) via the project path config."""
+    """Read ``configs/split.json`` (trip IDs per partition) via the project path config.
+
+    Normalizes partition keys to underscores and supports hyphenated aliases for compatibility.
+    """
     if split_file is None:
         from pathsnap.utils.config import get_path
 
         split_file = get_path("split_file", default="configs/split.json")
     with open(split_file, "r", encoding="utf-8") as fh:
-        return {k: [str(t) for t in v] for k, v in json.load(fh).items()}
+        raw_data = json.load(fh)
+
+    normalized: Dict[str, List[str]] = {}
+    for k, v in raw_data.items():
+        vals = [str(t) for t in v]
+        clean_key = k.lower().replace("-", "_")
+        normalized[clean_key] = vals
+        # Alias with hyphen to prevent silent KeyError if someone uses hyphens
+        normalized[clean_key.replace("_", "-")] = vals
+    return normalized
 
 
 # ---------------------------------------------------------------------------

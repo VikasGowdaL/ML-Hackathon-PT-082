@@ -10,7 +10,9 @@ import pandas as pd
 import pytest
 
 from pathsnap.data.loader import (
+    LOADER_VERSION,
     TripData,
+    clear_cache,
     compute_utm_epsg,
     discover_trips,
     get_trips,
@@ -88,22 +90,18 @@ def test_load_trip_shapes(mock_trip_dir: Path):
     """Test load_trip loads dataframes with valid shapes, types, and indices."""
     trip = load_trip("trip_001", raw_dir=mock_trip_dir, partition="train", project_utm=False)
 
-    # Check track shape and columns
     assert trip.track.shape == (4, 3)
     assert list(trip.track.columns) == ["lon", "lat", "t"]
     assert np.issubdtype(trip.track["t"].dtype, np.floating)
 
-    # Check nodes shape and columns
     assert trip.nodes.shape == (3, 3)
     assert list(trip.nodes.columns) == ["node_id", "lon", "lat"]
     assert list(trip.nodes["node_id"]) == [0, 1, 2]
 
-    # Check arcs shape and columns
     assert trip.arcs.shape == (2, 3)
     assert list(trip.arcs.columns) == ["arc_id", "from_node_id", "to_node_id"]
     assert list(trip.arcs["arc_id"]) == [0, 1]
 
-    # Check route
     assert trip.route is not None
     assert len(trip.route) == 2
     assert list(trip.route) == [0, 1]
@@ -114,7 +112,6 @@ def test_utm_projection(mock_trip_dir: Path):
     pytest.importorskip("pyproj")
     trip = load_trip("trip_001", raw_dir=mock_trip_dir, partition="train", project_utm=True)
 
-    # Check UTM projection
     assert trip.utm_crs is not None
     assert "EPSG:326" in trip.utm_crs
     assert trip.track_utm is not None
@@ -126,12 +123,12 @@ def test_utm_projection(mock_trip_dir: Path):
 
 
 def test_evaluator_label_guard(mock_trip_dir: Path):
-    """Test that evaluator partition labels are guarded and never leaked by default."""
+    """Test evaluator partition labels are guarded and never leaked by default."""
     # By default, evaluator trip route must be withheld (None)
     eval_trip_guarded = load_trip(
         "trip_002",
         raw_dir=mock_trip_dir,
-        partition="evaluator-testing",
+        partition="evaluator_test",
         allow_evaluator_labels=False,
         use_cache=False,
     )
@@ -141,7 +138,7 @@ def test_evaluator_label_guard(mock_trip_dir: Path):
     eval_trip_unmasked = load_trip(
         "trip_002",
         raw_dir=mock_trip_dir,
-        partition="evaluator-testing",
+        partition="evaluator_test",
         allow_evaluator_labels=True,
         use_cache=False,
     )
@@ -150,7 +147,7 @@ def test_evaluator_label_guard(mock_trip_dir: Path):
 
 
 def test_split_disjointness_and_ratios(tmp_path: Path):
-    """Test that split generation creates exactly 80 train, 10 student-test, 10 evaluator trips, strictly disjoint."""
+    """Test split generation creates exactly 80 train, 10 student_test, 10 evaluator_test trips."""
     trip_ids = [f"trip_{i:03d}" for i in range(1, 101)]
     split_file = tmp_path / "split.json"
 
@@ -162,30 +159,30 @@ def test_split_disjointness_and_ratios(tmp_path: Path):
     )
 
     train_set = set(split["train"])
-    student_set = set(split["student-test"])
-    eval_set = set(split["evaluator-testing"])
+    student_set = set(split["student_test"])
+    eval_set = set(split["evaluator_test"])
 
     # 1. Total counts must be exactly 80 / 10 / 10
     assert len(train_set) == 80, f"Expected 80 train trips, got {len(train_set)}"
-    assert len(student_set) == 10, f"Expected 10 student-test trips, got {len(student_set)}"
-    assert len(eval_set) == 10, f"Expected 10 evaluator-testing trips, got {len(eval_set)}"
+    assert len(student_set) == 10, f"Expected 10 student_test trips, got {len(student_set)}"
+    assert len(eval_set) == 10, f"Expected 10 evaluator_test trips, got {len(eval_set)}"
 
     # 2. Partitions must be strictly pairwise disjoint
-    assert len(train_set & student_set) == 0, "Train and student-test overlap!"
-    assert len(train_set & eval_set) == 0, "Train and evaluator-testing overlap!"
-    assert len(student_set & eval_set) == 0, "Student-test and evaluator-testing overlap!"
+    assert len(train_set & student_set) == 0, "Train and student_test overlap!"
+    assert len(train_set & eval_set) == 0, "Train and evaluator_test overlap!"
+    assert len(student_set & eval_set) == 0, "Student_test and evaluator_test overlap!"
 
     # 3. Union must equal all 100 trips
     assert (train_set | student_set | eval_set) == set(trip_ids)
 
 
 def test_get_trips_guard(mock_trip_dir: Path, tmp_path: Path):
-    """Test get_trips guard blocks route loading for evaluator partition."""
+    """Test get_trips guard blocks route loading for evaluator_test partition."""
     split_file = tmp_path / "split.json"
     split_data = {
         "train": ["trip_001"],
-        "student-test": [],
-        "evaluator-testing": ["trip_002"],
+        "student_test": [],
+        "evaluator_test": ["trip_002"],
     }
     split_file.write_text(json.dumps(split_data), encoding="utf-8")
 
@@ -202,7 +199,7 @@ def test_get_trips_guard(mock_trip_dir: Path, tmp_path: Path):
 
     # Evaluator partition suppresses route
     eval_trips = get_trips(
-        "evaluator-testing",
+        "evaluator_test",
         allow_evaluator_labels=False,
         raw_dir=mock_trip_dir,
         split_file=split_file,

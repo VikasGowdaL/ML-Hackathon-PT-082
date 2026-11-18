@@ -139,7 +139,8 @@ def test_real_trips_if_present():
         pytest.skip("Real raw dataset not present")
     idx = discover_trips(raw)
     split = load_split()
-    for tid in (split["train"][0], split["student-test"][0]):
+    student_trip_id = split.get("student_test", split.get("student-test"))[0]
+    for tid in (split["train"][0], student_trip_id):
         nodes, arcs, rep = load_road_network(tid, idx)
         assert not rep["errors"]
         G, val, summ = build_road_graph(nodes, arcs)
