@@ -73,12 +73,31 @@ export default function App() {
   const [showTrack, setShowTrack] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [tripSource, setTripSource] = useState("");
+  const [prediction, setPrediction] = useState(null);
+  const [predicting, setPredicting] = useState(false);
+  const [predictError, setPredictError] = useState("");
+  const [showRoute, setShowRoute] = useState(true);
 
   useEffect(() => {
     async function fetchTrips() {
       try {
-        const response = await axios.get(`${API_URL}/api/trips`);
-        const available = response.data.trips || [];
+        // Final evaluation: the reserved evaluation trips. Fallback: development trips.
+        let available = [];
+        try {
+          const evalResponse = await axios.get(`${API_URL}/api/eval/trips`);
+          available = evalResponse.data.trips || [];
+          if (available.length > 0) {
+            setTripSource(`Evaluation trips (${evalResponse.data.partition})`);
+          }
+        } catch {
+          available = [];
+        }
+        if (available.length === 0) {
+          const response = await axios.get(`${API_URL}/api/trips`);
+          available = response.data.trips || [];
+          setTripSource("Development trips (no evaluation trips on the server)");
+        }
 
         setTrips(available);
 
@@ -105,6 +124,8 @@ export default function App() {
       setLoading(true);
       setError("");
       setTripData(null);
+      setPrediction(null);
+      setPredictError("");
 
       try {
         const response = await axios.get(
@@ -132,6 +153,25 @@ export default function App() {
 
   const points = tripData?.gps_points || [];
   const positions = points.map((p) => [p.lat, p.lon]);
+  const routeSections = prediction?.predicted_route || [];
+  const metrics = prediction?.metrics;
+  const pct = (v) => (v === undefined || v === null ? "—" : `${(100 * v).toFixed(1)}%`);
+
+  async function runPrediction() {
+    if (!selectedTrip) return;
+    setPredicting(true);
+    setPredictError("");
+    try {
+      const response = await axios.post(`${API_URL}/api/predict/${selectedTrip}`);
+      setPrediction(response.data);
+    } catch (err) {
+      setPredictError(
+        err?.response?.data?.detail || "Prediction failed. Is the API (and its model) available on Laptop 1?"
+      );
+    } finally {
+      setPredicting(false);
+    }
+  }
 
   const menu = [
     { name: "Dashboard", icon: Map },
@@ -179,7 +219,7 @@ export default function App() {
           </div>
 
           <span className="demo-badge">
-            {tripData ? "REAL GPS DATA" : "AWAITING DATA"}
+            {prediction ? "ROUTE PREDICTED" : tripData ? "REAL GPS DATA" : "AWAITING DATA"}
           </span>
         </header>
 
@@ -210,8 +250,7 @@ export default function App() {
             <div>
               <h2>GPS Trip Visualization</h2>
               <p>
-                Select a trip to visualize its actual GPS
-                observations.
+                {tripSource || "Select a trip"} — select a trip, then run the route prediction.
               </p>
             </div>
 
@@ -243,6 +282,31 @@ export default function App() {
                 ))}
               </select>
 
+              <button
+                onClick={runPrediction}
+                disabled={!selectedTrip || predicting || loading}
+                style={{
+                  background: predicting ? "#334155" : "#f59e0b",
+                  color: "#0f172a",
+                  fontWeight: 600,
+                  padding: "10px 16px",
+                  border: "none",
+                  borderRadius: "8px",
+                  cursor: predicting ? "wait" : "pointer",
+                }}
+              >
+                {predicting ? "Predicting…" : "Predict Route"}
+              </button>
+
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showRoute}
+                  onChange={(e) => setShowRoute(e.target.checked)}
+                />
+                Predicted Route
+              </label>
+
               <label>
                 <input
                   type="checkbox"
@@ -272,6 +336,8 @@ export default function App() {
           )}
 
           {loading && <p>Loading GPS trip...</p>}
+          {predicting && <p>Running candidate generation, ML scoring and Viterbi decoding…</p>}
+          {predictError && <p style={{ color: "#f87171" }}>{predictError}</p>}
 
           {!loading && !error && trips.length === 0 && (
             <p>No local GPS trips were found.</p>
@@ -282,6 +348,7 @@ export default function App() {
               center={[20, 0]}
               zoom={2}
               scrollWheelZoom={true}
+              preferCanvas={true}
               style={{ height: "100%", width: "100%" }}
             >
               <TileLayer
@@ -315,6 +382,30 @@ export default function App() {
                     }}
                   />
                 ))}
+
+              {showRoute &&
+                routeSections.map((section, i) => (
+                  <Polyline
+                    key={`route-${i}`}
+                    positions={section}
+                    pathOptions={{ color: "#f59e0b", weight: 5, opacity: 0.9 }}
+                  />
+                ))}
+
+              {positions.length > 0 && (
+                <CircleMarker
+                  center={positions[0]}
+                  radius={9}
+                  pathOptions={{ color: "#fff", fillColor: "#22c55e", fillOpacity: 1, weight: 2 }}
+                />
+              )}
+              {positions.length > 1 && (
+                <CircleMarker
+                  center={positions[positions.length - 1]}
+                  radius={9}
+                  pathOptions={{ color: "#fff", fillColor: "#ef4444", fillOpacity: 1, weight: 2 }}
+                />
+              )}
             </MapContainer>
           </div>
 
@@ -327,7 +418,71 @@ export default function App() {
               <i className="legend-dot route" />
               GPS Trace (not map-matched)
             </span>
+            <span>
+              <i className="legend-dot" style={{ background: "#f59e0b" }} />
+              Predicted Route (ML + HMM)
+            </span>
+            <span>
+              <i className="legend-dot" style={{ background: "#22c55e" }} /> Start
+              <i className="legend-dot" style={{ background: "#ef4444", marginLeft: 10 }} /> End
+            </span>
           </div>
+
+          {prediction && (
+            <div style={{ marginTop: 20 }}>
+              <h2>Prediction Results — trip {prediction.trip_id}</h2>
+              {metrics ? (
+                <section className="stats-grid">
+                  <div className="stat-card">
+                    <span>Route accuracy (F1, by length)</span>
+                    <strong>{pct(metrics.route_f1)}</strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>Precision / Recall</span>
+                    <strong>
+                      {pct(metrics.route_precision)} / {pct(metrics.route_recall)}
+                    </strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>GPS points on true route (ML + HMM)</span>
+                    <strong>{pct(metrics.points_on_route)}</strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>GPS points on true route (ML only)</span>
+                    <strong>{pct(metrics.points_on_route_ml_only)}</strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>Predicted / true route length</span>
+                    <strong>
+                      {metrics.predicted_route_km.toFixed(2)} / {metrics.reference_route_km.toFixed(2)} km
+                    </strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>Route sections / gaps</span>
+                    <strong>
+                      {metrics.route_sections} / {metrics.unbridged_breaks}
+                    </strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>Processing time</span>
+                    <strong>
+                      {prediction.timing_s.total_s.toFixed(2)} s{prediction.cached ? " (cached)" : ""}
+                    </strong>
+                  </div>
+                  <div className="stat-card">
+                    <span>Predicted arcs</span>
+                    <strong>{prediction.predicted_arc_count}</strong>
+                  </div>
+                </section>
+              ) : (
+                <p>No reference route is available on the server for this trip, so no accuracy is shown.</p>
+              )}
+              <p style={{ color: "#94a3b8", fontSize: 13 }}>
+                Model: {prediction.model.estimator} · Decoder: {prediction.model.decoder}. The reference route is
+                used only by the server to compute these scores after prediction.
+              </p>
+            </div>
+          )}
         </section>
       </main>
     </div>
