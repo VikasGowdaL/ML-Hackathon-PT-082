@@ -1,0 +1,2 @@
+timestamp,model,family,seed,config_json,metrics_json,train_time_sec,inference_time_sec,notes
+2026-11-18T06:44:36.940563+00:00,baseline_test,hmm,,"{""test"": 1}","{""acc"": 1.0}",,,check

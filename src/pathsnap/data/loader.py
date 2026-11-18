@@ -334,6 +334,19 @@ def load_trip(
             # Invalidate if loader version or schema changed
             cached_ver = trip_data.metadata.get("loader_version")
             if cached_ver == LOADER_VERSION:
+                # If caller requests UTM projection but cache was saved without it, project now
+                if project_utm and trip_data.utm_crs is None and pyproj is not None:
+                    min_lon = float(min(trip_data.track["lon"].min(), trip_data.nodes["lon"].min()))
+                    max_lon = float(max(trip_data.track["lon"].max(), trip_data.nodes["lon"].max()))
+                    min_lat = float(min(trip_data.track["lat"].min(), trip_data.nodes["lat"].min()))
+                    max_lat = float(max(trip_data.track["lat"].max(), trip_data.nodes["lat"].max()))
+
+                    trip_data.utm_crs = compute_utm_epsg(min_lon, min_lat, max_lon, max_lat)
+                    tx, ty = project_coordinates(trip_data.track, "lon", "lat", target_crs=trip_data.utm_crs)
+                    trip_data.track_utm = pd.DataFrame({"x": tx, "y": ty, "t": trip_data.track["t"].to_numpy()})
+                    nx, ny = project_coordinates(trip_data.nodes, "lon", "lat", target_crs=trip_data.utm_crs)
+                    trip_data.nodes_utm = pd.DataFrame({"node_id": trip_data.nodes["node_id"].to_numpy(), "x": nx, "y": ny})
+
                 if is_evaluator:
                     if not allow_evaluator_labels:
                         trip_data.route = None
