@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 
 from pathsnap.models.harness import FEATURES
-from pathsnap.road_network import load_road_network
+from pathsnap.road_network import load_road_network, build_road_graph
+from pathsnap.hmm.route_reconstruction import reconstruct_route
 from pathsnap.hmm.viterbi import decode_viterbi, ViterbiConfig
 
 
@@ -78,7 +79,107 @@ def evaluate(trip_id: str, model_path: Path, output_dir: Path) -> None:
     path = output_dir / f'{trip_id}_viterbi_comparison.csv'
     comparison.to_csv(path, index=False)
     print(f'Saved comparison: {path}')
-    print('Note: arc-level decoding only; shortest-path bridging is not implemented yet.')
+
+    # Reconstruct directed routes without crossing observation gaps or resets.
+    graph, _, _ = build_road_graph(arcs_nodes, arcs)
+
+    route_rows = []
+    break_rows = []
+    subroute = -1
+    previous_arc = None
+    previous_obs = None
+    inserted = 0
+    bridge_length = 0.0
+
+    for row in comparison.sort_values("obs_idx").itertuples(index=False):
+        obs = int(row.obs_idx)
+        arc_value = row.predicted_arc_id
+
+        if pd.isna(arc_value):
+            previous_arc = None
+            previous_obs = None
+            continue
+
+        arc = int(arc_value)
+        start_new = (
+            previous_arc is None
+            or previous_obs is None
+            or obs != previous_obs + 1
+            or reset[obs]
+        )
+
+        if start_new:
+            subroute += 1
+            route_rows.append({
+                "subroute": subroute,
+                "arc_id": arc,
+                "source": "matched",
+            })
+        else:
+            result = reconstruct_route(
+                [previous_arc, arc],
+                graph,
+                max_bridge_m=2000.0,
+            )
+
+            if result.breaks:
+                break_rows.append({
+                    "previous_obs": previous_obs,
+                    "next_obs": obs,
+                    "previous_arc": previous_arc,
+                    "next_arc": arc,
+                })
+                subroute += 1
+                route_rows.append({
+                    "subroute": subroute,
+                    "arc_id": arc,
+                    "source": "matched",
+                })
+            else:
+                # The first arc is already in the output.
+                bridge_arcs = result.route_arcs[1:-1]
+
+                for bridge_arc in bridge_arcs:
+                    route_rows.append({
+                        "subroute": subroute,
+                        "arc_id": bridge_arc,
+                        "source": "bridge",
+                    })
+
+                if arc != previous_arc:
+                    route_rows.append({
+                        "subroute": subroute,
+                        "arc_id": arc,
+                        "source": "matched",
+                    })
+
+                inserted += result.bridges_inserted
+                bridge_length += result.total_bridge_length_m
+
+        previous_arc = arc
+        previous_obs = obs
+
+    route_path = output_dir / f"{trip_id}_reconstructed_arcs.csv"
+    breaks_path = output_dir / f"{trip_id}_route_breaks.csv"
+
+    pd.DataFrame(
+        route_rows,
+        columns=["subroute", "arc_id", "source"]
+    ).to_csv(route_path, index=False)
+
+    pd.DataFrame(
+        break_rows,
+        columns=["previous_obs", "next_obs", "previous_arc", "next_arc"]
+    ).to_csv(breaks_path, index=False)
+
+    print("\\nShortest-path reconstruction:")
+    print(f"Bridge arcs inserted : {inserted}")
+    print(f"Total bridge distance: {bridge_length:.2f} m")
+    print(f"Unbridgeable pairs   : {len(break_rows)}")
+    print(f"Route sections       : {subroute + 1}")
+    print(f"Saved route          : {route_path}")
+    print(f"Saved breaks         : {breaks_path}")
+
 
 
 def main():
