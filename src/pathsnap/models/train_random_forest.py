@@ -1,165 +1,173 @@
-"""Random Forest model for PathSnap candidate arc scoring.
+#!/usr/bin/env python3
+"""Train and evaluate Random Forest candidate scorer via the shared harness (Milestone 3).
 
-Scores each (GPS observation, candidate arc) pair with predict_proba.
-Exposes:
-  - RF_CONFIG: default hyperparameters in one central place
-  - model_factory(): returns an sklearn Pipeline
-  - run(): entry point for the shared harness, containing a temporary smoke test
+Usage:
+    python -m pathsnap.models.train_random_forest
+    python -m pathsnap.models.train_random_forest --max-depth 12 --name random_forest_d12
+    python -m pathsnap.models.train_random_forest --max-depth 18 --name random_forest_d18
+
+Model: Random Forest Classifier on Milestone 2 candidate feature table (36 features).
+Imbalance: class_weight="balanced_subsample" dynamically adjusts weights per bootstrap sample.
+Grouped 5-fold CV by trip_id, full fit on train trips, and evaluation on student_test.
+Logs everything to outputs/results/experiments.csv and artifacts/models/.
 """
 
 from __future__ import annotations
 
-import logging
-import time
-from typing import Any, Dict, List, Optional
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Dict
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
 
-from pathsnap.models.common import FEATURE_COLUMNS, load_dataset
-
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Central Hyperparameters Configuration
-# ---------------------------------------------------------------------------
-# Justification:
-# - n_estimators=200: Provides ensemble variance reduction and stable class
-#   probabilities without prohibitive training latency on ~1.77M candidate pairs.
-# - max_depth=15: Prevents deep tree splits that overfit local GPS measurement
-#   noise and isolated geometric artifacts; limits leaf memory usage.
-# - min_samples_leaf=10: Ensures every leaf has sufficient observations to
-#   estimate calibrated local probabilities; prevents 1-sample leaves.
-# - class_weight="balanced_subsample": Adjusts split criteria dynamically per
-#   bootstrap sample to account for the ~8.57:1 negative-to-positive class
-#   imbalance without throwing away training samples.
-# - n_jobs=-1: Maximizes multi-core CPU utilization during tree construction.
-# - random_state=42: Guarantees strict reproducibility.
-RF_CONFIG: Dict[str, Any] = {
-    "n_estimators": 200,
-    "max_depth": 15,
-    "min_samples_leaf": 10,
-    "class_weight": "balanced_subsample",
-    "n_jobs": -1,
-    "random_state": 42,
-    "impute_missing": True,
-}
-
-# Temporary trips used for smoke testing before harness integration
-TEMPORARY_SMOKE_TEST_TRIPS = ["00000039", "00000005", "00000045"]
+from pathsnap.models import harness as H
 
 
-def model_factory(config: Optional[Dict[str, Any]] = None) -> Pipeline:
-    """
-    Construct an sklearn Pipeline for Random Forest scoring.
-
-    Parameters:
-        config: Optional dictionary overriding keys in RF_CONFIG.
-
-    Returns:
-        sklearn Pipeline (SimpleImputer + RandomForestClassifier).
-        No scaling is applied since tree-based models are scale-invariant.
-    """
-    cfg = dict(RF_CONFIG)
-    if config:
-        cfg.update(config)
-
-    steps = []
-    if cfg.get("impute_missing", True):
-        # Median imputer handles 0.10% NaNs in heading features (stationary points)
-        steps.append(("imputer", SimpleImputer(strategy="median")))
-
-    steps.append((
-        "rf",
-        RandomForestClassifier(
-            n_estimators=cfg["n_estimators"],
-            max_depth=cfg["max_depth"],
-            min_samples_leaf=cfg["min_samples_leaf"],
-            class_weight=cfg["class_weight"],
-            n_jobs=cfg["n_jobs"],
-            random_state=cfg["random_state"],
-        ),
-    ))
-
-    return Pipeline(steps)
-
-
-def run(
-    trips: Optional[List[str]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    radius_m: int = 50,
-) -> Dict[str, Any]:
-    """
-    Single run() entry point designed to plug into the shared harness.
-
-    Until the harness in src/pathsnap/models/harness.py is ready, this function
-    executes a temporary self-contained smoke test on 3 small trips.
-
-    Parameters:
-        trips: Optional list of trip IDs. If None, runs the smoke test.
-        config: Optional hyperparameter overrides.
-        radius_m: Search radius in metres for candidate features (default: 50).
-
-    Returns:
-        Dict with pipeline, feature_names, and smoke test / run summary.
-    """
-    is_temporary_smoke_test = trips is None
-    target_trips = TEMPORARY_SMOKE_TEST_TRIPS if is_temporary_smoke_test else trips
-
-    print(
-        f"[Random Forest] {'TEMPORARY SMOKE TEST' if is_temporary_smoke_test else 'Run'} "
-        f"on {len(target_trips)} trips: {target_trips}"
-    )
-
-    t0 = time.time()
-    X, y, meta = load_dataset(target_trips, partition="train", radius_m=radius_m, labeled=True)
-    t_load = time.time() - t0
-
-    print(
-        f"  Loaded dataset: X shape {X.shape}, y distribution: "
-        f"0={int((y == 0).sum())}, 1={int((y == 1).sum())} ({t_load:.2f}s)"
-    )
-
-    pipeline = model_factory(config)
-
-    t0 = time.time()
-    pipeline.fit(X, y)
-    t_fit = time.time() - t0
-
-    t0 = time.time()
-    sample_size = min(1000, len(X))
-    probs = pipeline.predict_proba(X.iloc[:sample_size])
-    t_infer = time.time() - t0
-
-    assert probs.shape == (sample_size, 2), f"Expected shape ({sample_size}, 2), got {probs.shape}"
-    assert np.allclose(probs.sum(axis=1), 1.0), "Probabilities do not sum to 1.0"
-    assert (probs >= 0.0).all() and (probs <= 1.0).all(), "Probabilities out of [0, 1] range"
-
-    result = {
-        "status": "success",
-        "is_temporary_smoke_test": is_temporary_smoke_test,
-        "pipeline": pipeline,
-        "feature_names": FEATURE_COLUMNS,
-        "n_samples": len(X),
-        "fit_time_s": t_fit,
-        "inference_ms_per_1k": (t_infer / sample_size) * 1000.0 * 1000.0,
-        "pos_class_prob_mean": float(probs[:, 1].mean()),
-        "pos_class_prob_max": float(probs[:, 1].max()),
+def build_config(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "estimator": "sklearn.ensemble.RandomForestClassifier",
+        "n_estimators": args.n_estimators,
+        "max_depth": args.max_depth,
+        "min_samples_leaf": args.min_samples_leaf,
+        "max_features": args.max_features,
+        "class_weight": args.class_weight,
+        "criterion": "gini",
+        "n_jobs": args.n_jobs,
+        "random_state": H.SEED,
+        "preprocessing": "median impute + missing indicators (scale=False in Pipeline)",
+        "threshold": 0.5,
     }
 
-    print(
-        f"  Fit time: {t_fit:.2f}s | Inference latency: {result['inference_ms_per_1k']:.2f} ms / 1k rows"
-    )
-    print(
-        f"  Predicted prob(class=1) - mean: {result['pos_class_prob_mean']:.4f}, max: {result['pos_class_prob_max']:.4f}"
-    )
-    print("  [Random Forest] Verification passed.")
 
-    return result
+def plot_feature_importances(model_pipeline: Any, feature_names: list[str], output_path: Path) -> pd.DataFrame:
+    """Extract and plot Gini feature importances from fitted Random Forest pipeline."""
+    rf = model_pipeline.named_steps["model"]
+    importances = rf.feature_importances_
+
+    # Account for SimpleImputer missing indicators if present
+    imputer = model_pipeline.named_steps["impute"]
+    names = list(feature_names)
+    if hasattr(imputer, "indicator_") and imputer.indicator_ is not None:
+        missing_indices = imputer.indicator_.features_
+        missing_names = [f"{names[i]}_missing" for i in missing_indices]
+        all_feature_names = names + missing_names
+    else:
+        all_feature_names = names
+
+    # Truncate or match names to importances length
+    if len(all_feature_names) != len(importances):
+        all_feature_names = [f"feat_{i}" for i in range(len(importances))]
+
+    df_imp = pd.DataFrame({
+        "feature": all_feature_names,
+        "importance": importances,
+    }).sort_values("importance", ascending=True)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(10, 10))
+    plt.barh(df_imp["feature"][-25:], df_imp["importance"][-25:], color="steelblue")
+    plt.xlabel("Gini Feature Importance")
+    plt.title("Random Forest - Top 25 Feature Importances")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+    csv_path = output_path.with_suffix(".csv")
+    df_imp.sort_values("importance", ascending=False).to_csv(csv_path, index=False)
+    print(f"Saved feature importances plot to {output_path} and CSV to {csv_path}")
+    return df_imp
+
+
+def model_factory(config: Dict[str, Any] | None = None) -> Any:
+    cfg = {
+        "n_estimators": 200,
+        "max_depth": 15,
+        "min_samples_leaf": 10,
+        "max_features": "sqrt",
+        "class_weight": "balanced_subsample",
+        "criterion": "gini",
+        "n_jobs": -1,
+        "random_state": H.SEED,
+    }
+    if config:
+        cfg.update(config)
+    est = RandomForestClassifier(
+        n_estimators=cfg["n_estimators"],
+        max_depth=cfg["max_depth"],
+        min_samples_leaf=cfg["min_samples_leaf"],
+        max_features=cfg["max_features"],
+        class_weight=cfg["class_weight"],
+        criterion=cfg["criterion"],
+        n_jobs=cfg["n_jobs"],
+        random_state=cfg["random_state"],
+    )
+    return H.make_pipeline(est, scale=False)
+
+
+def run_rf(args: argparse.Namespace) -> Dict[str, Any]:
+    cfg = build_config(args)
+
+    def factory():
+        return model_factory(cfg)
+
+    print(f"\n=======================================================")
+    print(f"Running Random Forest Experiment: {args.name}")
+    print(f"Config: {json.dumps(cfg, indent=2)}")
+    print(f"=======================================================\n")
+
+    summary = H.run_experiment(factory, name=args.name, family="tree", config=cfg)
+
+    # Plot feature importances using fitted model saved in artifacts
+    model_path = Path("artifacts/models") / f"{args.name}.joblib"
+    if model_path.exists():
+        import joblib
+        fitted_model = joblib.load(model_path)
+        plot_path = Path("outputs/plots") / f"{args.name}_feature_importances.png"
+        plot_feature_importances(fitted_model, H.FEATURES, plot_path)
+
+    keys = [
+        "macro_f1",
+        "top1_when_candidate",
+        "top1_all_points",
+        "candidate_miss_rate",
+        "route_continuity",
+        "log_loss",
+        "precision",
+        "recall",
+        "accuracy",
+    ]
+    print(f"\n{'metric':24s} {'fold-train':>10s} {'CV mean':>9s} {'CV std':>8s} {'full-train':>10s} {'student':>9s}")
+    for k in keys:
+        print(
+            f"{k:24s} {summary[f'cv_train_{k}_mean']:10.4f} {summary[f'cv_{k}_mean']:9.4f} {summary[f'cv_{k}_std']:8.4f} "
+            f"{summary[f'full_train_{k}']:10.4f} {summary[f'student_{k}']:9.4f}"
+        )
+    print(f"\nStudent confusion matrix [[TN, FP], [FN, TP]]: {summary['student_confusion_matrix']}")
+    print(
+        f"Timing: CV fit {summary['cv_fit_time_s_mean']:.1f}s/fold, full fit {summary['full_fit_time_s']:.1f}s, "
+        f"inference {summary['student_infer_ms_per_1k_rows']:.2f} ms per 1k rows, largest trip: {summary['largest_trip']}"
+    )
+
+    return summary
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--name", default="random_forest")
+    ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument("--max-depth", type=int, default=15)
+    ap.add_argument("--min-samples-leaf", type=int, default=10)
+    ap.add_argument("--max-features", default="sqrt")
+    ap.add_argument("--class-weight", default="balanced_subsample")
+    ap.add_argument("--n-jobs", type=int, default=-1)
+    args = ap.parse_args()
+
+    run_rf(args)
 
 
 if __name__ == "__main__":
-    run()
+    main()

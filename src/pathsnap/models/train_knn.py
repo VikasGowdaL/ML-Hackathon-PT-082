@@ -1,228 +1,264 @@
-"""K-Nearest Neighbors (KNN) model for PathSnap candidate arc scoring.
+#!/usr/bin/env python3
+"""Train and evaluate K-Nearest Neighbors (KNN) candidate scorer via the shared harness (Milestone 3).
 
-Scores each (GPS observation, candidate arc) pair with predict_proba.
-Exposes:
-  - KNN_CONFIG: default hyperparameters in one central place
-  - model_factory(): returns an sklearn Pipeline (StandardScaler + KNeighborsClassifier)
-  - subsample_training_fold(): safe negative downsampler strictly for training folds
-  - run(): entry point for the shared harness, containing a temporary smoke test
+Usage:
+    python -m pathsnap.models.train_knn                                     # default initial run (k=21)
+    python -m pathsnap.models.train_knn --k 11 --name knn_k11
+    python -m pathsnap.models.train_knn --k 31 --name knn_k31
+    python -m pathsnap.models.train_knn --sweep-k                           # manual sensitivity sweep over k
+
+Model: Distance-weighted KNN on standardized features (median imputation + missing indicators + StandardScaler).
+Loss / Decision: Weighted neighbor voting with inverse Euclidean distance: w_i = 1 / d(x, x_i).
+Imbalance & Latency Feasibility:
+  - Inside training folds only, retains 100% of positive instances and downsamples negatives (ratio 4:1,
+    capped at 50,000 samples) to ensure inference latency is feasible (~38 ms/1k rows instead of ~5.5s/1k rows).
+  - Validation and student_test folds are NEVER subsampled (evaluated on 100% of candidate observations).
+Grouped 5-fold CV by trip_id, full fit on train trips, and evaluation on student_test.
+Logs everything to outputs/results/experiments.csv and artifacts/models/.
 """
 
 from __future__ import annotations
 
-import logging
-import time
-from typing import Any, Dict, List, Optional, Tuple
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Dict, List
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.impute import SimpleImputer
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
-from pathsnap.models.common import FEATURE_COLUMNS, load_dataset
-
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Central Hyperparameters Configuration
-# ---------------------------------------------------------------------------
-# Justification:
-# - n_neighbors=21: A moderately large, odd k yields smooth, continuous probability
-#   estimates (rather than coarse step-function fractions like k=3: 0, 0.33, 0.67, 1.0)
-#   while remaining strictly local in standardized geometric space.
-# - weights="distance": Inverse Euclidean distance weighting gives immediate spatial
-#   and angular matches higher decision weight than distant boundary candidates.
-# - metric="minkowski", p=2: Standard Euclidean metric on standardized features
-#   ensures isotropic geometric distance across normalized coordinates and angles.
-# - n_jobs=-1: Maximizes multi-core CPU utilization during neighbor searches.
-# - subsample_negatives=True: Caps negative instances in training fold to keep
-#   O(N_train * N_test) search complexity tractable on large datasets (~1.77M rows).
-# - negative_subsample_ratio=4.0: Retains all positive instances while sampling 4
-#   negatives per positive, balancing inference latency with decision boundary precision.
-KNN_CONFIG: Dict[str, Any] = {
-    "n_neighbors": 21,
-    "weights": "distance",
-    "metric": "minkowski",
-    "p": 2,
-    "n_jobs": -1,
-    "impute_missing": True,
-    "subsample_negatives": False,  # Default off for smoke tests; activated inside CV training fold
-    "negative_subsample_ratio": 4.0,
-    "max_train_samples": 50000,
-    "random_state": 42,
-}
-
-# Temporary trips used for smoke testing before harness integration
-TEMPORARY_SMOKE_TEST_TRIPS = ["00000039", "00000005", "00000045"]
+from pathsnap.models import harness as H
 
 
-def model_factory(config: Optional[Dict[str, Any]] = None) -> Pipeline:
+class SubsampledKNeighborsClassifier(BaseEstimator, ClassifierMixin):
     """
-    Construct an sklearn Pipeline for KNN candidate scoring.
+    KNeighborsClassifier with safe negative-candidate subsampling on the training fold ONLY.
 
-    Parameters:
-        config: Optional dictionary overriding keys in KNN_CONFIG.
-
-    Returns:
-        sklearn Pipeline (SimpleImputer + StandardScaler + KNeighborsClassifier).
-        StandardScaler is mandatory because KNN is highly scale-dependent.
+    Invariance guarantees:
+    - Retains 100% of minority positive instances (reference arcs).
+    - Subsamples majority negative candidates to negative_subsample_ratio * n_pos.
+    - Evaluation (predict_proba / score) is executed on the full, un-subsampled validation/test sets.
     """
-    cfg = dict(KNN_CONFIG)
-    if config:
-        cfg.update(config)
 
-    steps = []
-    if cfg.get("impute_missing", True):
-        # Median imputer handles 0.10% NaNs in heading features (stationary points)
-        steps.append(("imputer", SimpleImputer(strategy="median")))
+    def __init__(
+        self,
+        n_neighbors: int = 21,
+        weights: str = "distance",
+        metric: str = "minkowski",
+        p: int = 2,
+        subsample_negatives: bool = True,
+        negative_subsample_ratio: float = 4.0,
+        max_train_samples: int = 50000,
+        n_jobs: int = -1,
+        random_state: int = 42,
+    ):
+        self.n_neighbors = n_neighbors
+        self.weights = weights
+        self.metric = metric
+        self.p = p
+        self.subsample_negatives = subsample_negatives
+        self.negative_subsample_ratio = negative_subsample_ratio
+        self.max_train_samples = max_train_samples
+        self.n_jobs = n_jobs
+        self.random_state = random_state
 
-    steps.append(("scaler", StandardScaler()))
-    steps.append((
-        "knn",
-        KNeighborsClassifier(
-            n_neighbors=cfg["n_neighbors"],
-            weights=cfg["weights"],
-            metric=cfg["metric"],
-            p=cfg["p"],
-            n_jobs=cfg["n_jobs"],
-        ),
-    ))
+    def fit(self, X: Any, y: Any) -> SubsampledKNeighborsClassifier:
+        X_arr = np.asarray(X)
+        y_arr = np.asarray(y)
 
-    return Pipeline(steps)
+        if self.subsample_negatives:
+            pos_idx = np.where(y_arr == 1)[0]
+            neg_idx = np.where(y_arr == 0)[0]
+            target_neg = min(len(neg_idx), int(len(pos_idx) * self.negative_subsample_ratio))
 
+            rng = np.random.default_rng(self.random_state)
+            kept_neg = rng.choice(neg_idx, size=target_neg, replace=False)
 
-def subsample_training_fold(
-    X: pd.DataFrame,
-    y: pd.Series,
-    negative_ratio: float = 4.0,
-    max_samples: Optional[int] = None,
-    random_state: int = 42,
-) -> Tuple[pd.DataFrame, pd.Series]:
-    """
-    Subsamples negative candidates inside the training fold ONLY.
+            idx = np.concatenate([pos_idx, kept_neg])
+            rng.shuffle(idx)
 
-    CRITICAL RULES:
-    1. NEVER apply to validation or test folds. Validation must evaluate against 100% of candidates.
-    2. Keeps 100% of positive (ground-truth) candidate arcs to prevent information loss.
-    3. Randomly samples negatives up to (n_pos * negative_ratio) to reduce KD-tree / brute-force
-       search complexity during inference.
-    """
-    pos_mask = (y == 1).to_numpy()
-    neg_mask = (y == 0).to_numpy()
+            if self.max_train_samples and len(idx) > self.max_train_samples:
+                idx = idx[: self.max_train_samples]
 
-    pos_indices = np.where(pos_mask)[0]
-    neg_indices = np.where(neg_mask)[0]
+            X_fit = X_arr[idx]
+            y_fit = y_arr[idx]
+        else:
+            X_fit = X_arr
+            y_fit = y_arr
 
-    n_pos = len(pos_indices)
-    n_neg = len(neg_indices)
-
-    target_n_neg = min(n_neg, int(n_pos * negative_ratio))
-
-    rng = np.random.default_rng(random_state)
-    kept_neg_indices = rng.choice(neg_indices, size=target_n_neg, replace=False)
-
-    all_indices = np.concatenate([pos_indices, kept_neg_indices])
-    rng.shuffle(all_indices)
-
-    if max_samples is not None and len(all_indices) > max_samples:
-        all_indices = all_indices[:max_samples]
-
-    return X.iloc[all_indices].copy(), y.iloc[all_indices].copy()
-
-
-def run(
-    trips: Optional[List[str]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    radius_m: int = 50,
-) -> Dict[str, Any]:
-    """
-    Single run() entry point designed to plug into the shared harness.
-
-    Until the harness in src/pathsnap/models/harness.py is ready, this function
-    executes a temporary self-contained smoke test on 3 small trips.
-
-    Parameters:
-        trips: Optional list of trip IDs. If None, runs the smoke test.
-        config: Optional hyperparameter overrides.
-        radius_m: Search radius in metres for candidate features (default: 50).
-
-    Returns:
-        Dict with pipeline, feature_names, and smoke test / run summary.
-    """
-    is_temporary_smoke_test = trips is None
-    target_trips = TEMPORARY_SMOKE_TEST_TRIPS if is_temporary_smoke_test else trips
-
-    print(
-        f"[KNN] {'TEMPORARY SMOKE TEST' if is_temporary_smoke_test else 'Run'} "
-        f"on {len(target_trips)} trips: {target_trips}"
-    )
-
-    t0 = time.time()
-    X, y, meta = load_dataset(target_trips, partition="train", radius_m=radius_m, labeled=True)
-    t_load = time.time() - t0
-
-    print(
-        f"  Loaded dataset: X shape {X.shape}, y distribution: "
-        f"0={int((y == 0).sum())}, 1={int((y == 1).sum())} ({t_load:.2f}s)"
-    )
-
-    cfg = dict(KNN_CONFIG)
-    if config:
-        cfg.update(config)
-
-    # If subsampling requested for training fold
-    if cfg.get("subsample_negatives", False):
-        X_train, y_train = subsample_training_fold(
-            X,
-            y,
-            negative_ratio=cfg.get("negative_subsample_ratio", 4.0),
-            max_samples=cfg.get("max_train_samples"),
-            random_state=cfg.get("random_state", 42),
+        self.estimator_ = KNeighborsClassifier(
+            n_neighbors=self.n_neighbors,
+            weights=self.weights,
+            metric=self.metric,
+            p=self.p,
+            n_jobs=self.n_jobs,
         )
-        print(f"  Training fold subsampled: {len(X)} -> {len(X_train)} rows")
-    else:
-        X_train, y_train = X, y
+        self.estimator_.fit(X_fit, y_fit)
+        self.classes_ = self.estimator_.classes_
+        return self
 
-    pipeline = model_factory(cfg)
+    def predict_proba(self, X: Any) -> np.ndarray:
+        return self.estimator_.predict_proba(X)
 
-    t0 = time.time()
-    pipeline.fit(X_train, y_train)
-    t_fit = time.time() - t0
+    def predict(self, X: Any) -> np.ndarray:
+        return self.estimator_.predict(X)
 
-    t0 = time.time()
-    sample_size = min(1000, len(X))
-    probs = pipeline.predict_proba(X.iloc[:sample_size])
-    t_infer = time.time() - t0
 
-    assert probs.shape == (sample_size, 2), f"Expected shape ({sample_size}, 2), got {probs.shape}"
-    assert np.allclose(probs.sum(axis=1), 1.0), "Probabilities do not sum to 1.0"
-    assert (probs >= 0.0).all() and (probs <= 1.0).all(), "Probabilities out of [0, 1] range"
-
-    result = {
-        "status": "success",
-        "is_temporary_smoke_test": is_temporary_smoke_test,
-        "pipeline": pipeline,
-        "feature_names": FEATURE_COLUMNS,
-        "n_samples": len(X),
-        "n_train_samples": len(X_train),
-        "fit_time_s": t_fit,
-        "inference_ms_per_1k": (t_infer / sample_size) * 1000.0 * 1000.0,
-        "pos_class_prob_mean": float(probs[:, 1].mean()),
-        "pos_class_prob_max": float(probs[:, 1].max()),
+def build_config(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "estimator": "pathsnap.models.train_knn.SubsampledKNeighborsClassifier",
+        "n_neighbors": args.k,
+        "weights": args.weights,
+        "metric": args.metric,
+        "p": 2,
+        "subsample_negatives": args.subsample_negatives,
+        "negative_subsample_ratio": args.negative_ratio,
+        "max_train_samples": args.max_train_samples,
+        "n_jobs": args.n_jobs,
+        "random_state": H.SEED,
+        "preprocessing": "median impute + missing indicators + StandardScaler (scale=True in Pipeline)",
+        "threshold": 0.5,
     }
 
-    print(
-        f"  Fit time: {t_fit:.3f}s | Inference latency: {result['inference_ms_per_1k']:.2f} ms / 1k rows"
-    )
-    print(
-        f"  Predicted prob(class=1) - mean: {result['pos_class_prob_mean']:.4f}, max: {result['pos_class_prob_max']:.4f}"
-    )
-    print("  [KNN] Verification passed.")
 
-    return result
+def model_factory(config: Dict[str, Any] | None = None) -> Any:
+    cfg = {
+        "n_neighbors": 21,
+        "weights": "distance",
+        "metric": "minkowski",
+        "p": 2,
+        "subsample_negatives": True,
+        "negative_subsample_ratio": 4.0,
+        "max_train_samples": 50000,
+        "n_jobs": -1,
+        "random_state": H.SEED,
+    }
+    if config:
+        cfg.update(config)
+    est = SubsampledKNeighborsClassifier(
+        n_neighbors=cfg["n_neighbors"],
+        weights=cfg["weights"],
+        metric=cfg["metric"],
+        p=cfg["p"],
+        subsample_negatives=cfg["subsample_negatives"],
+        negative_subsample_ratio=cfg["negative_subsample_ratio"],
+        max_train_samples=cfg["max_train_samples"],
+        n_jobs=cfg["n_jobs"],
+        random_state=cfg["random_state"],
+    )
+    return H.make_pipeline(est, scale=True)
+
+
+def run_single_knn(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def factory():
+        return model_factory(cfg)
+
+    print(f"\n=======================================================")
+    print(f"Running KNN Experiment: {name}")
+    print(f"Config: {json.dumps(cfg, indent=2)}")
+    print(f"=======================================================\n")
+
+    summary = H.run_experiment(factory, name=name, family="instance_based", config=cfg)
+
+    keys = [
+        "macro_f1",
+        "top1_when_candidate",
+        "top1_all_points",
+        "candidate_miss_rate",
+        "route_continuity",
+        "log_loss",
+        "precision",
+        "recall",
+        "accuracy",
+    ]
+    print(f"\n{'metric':24s} {'fold-train':>10s} {'CV mean':>9s} {'CV std':>8s} {'full-train':>10s} {'student':>9s}")
+    for k in keys:
+        print(
+            f"{k:24s} {summary[f'cv_train_{k}_mean']:10.4f} {summary[f'cv_{k}_mean']:9.4f} {summary[f'cv_{k}_std']:8.4f} "
+            f"{summary[f'full_train_{k}']:10.4f} {summary[f'student_{k}']:9.4f}"
+        )
+    print(f"\nStudent confusion matrix [[TN, FP], [FN, TP]]: {summary['student_confusion_matrix']}")
+    print(
+        f"Timing: CV fit {summary['cv_fit_time_s_mean']:.1f}s/fold, full fit {summary['full_fit_time_s']:.1f}s, "
+        f"inference {summary['student_infer_ms_per_1k_rows']:.2f} ms per 1k rows, largest trip: {summary['largest_trip']}"
+    )
+    return summary
+
+
+def run_k_sweep(base_args: argparse.Namespace) -> None:
+    """Run manual sensitivity sweep over k and plot CV Macro F1 curve."""
+    k_values = [11, 21, 31]
+    cv_scores = []
+    print(f"\nStarting KNN k sensitivity sweep over {k_values}...")
+
+    for k in k_values:
+        run_name = f"knn_k{k}" if k != 21 else "knn"
+        args_copy = argparse.Namespace(**vars(base_args))
+        args_copy.k = k
+        args_copy.name = run_name
+        cfg = build_config(args_copy)
+        summary = run_single_knn(run_name, cfg)
+        cv_scores.append({
+            "k": k,
+            "cv_macro_f1": summary["cv_macro_f1_mean"],
+            "cv_macro_f1_std": summary["cv_macro_f1_std"],
+            "cv_top1": summary["cv_top1_when_candidate_mean"],
+            "student_macro_f1": summary["student_macro_f1"],
+            "student_top1": summary["student_top1_when_candidate"],
+        })
+
+    df_sweep = pd.DataFrame(cv_scores)
+    out_dir = Path("outputs/plots")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "knn_k_sensitivity.csv"
+    df_sweep.to_csv(csv_path, index=False)
+
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(
+        df_sweep["k"],
+        df_sweep["cv_macro_f1"],
+        yerr=df_sweep["cv_macro_f1_std"],
+        marker="o",
+        capsize=5,
+        color="darkorange",
+        label="CV Macro F1 (mean ± std)",
+    )
+    plt.plot(df_sweep["k"], df_sweep["student_macro_f1"], marker="s", linestyle="--", color="gray", label="Student-test Macro F1")
+    plt.title("KNN Sensitivity: k vs Macro F1")
+    plt.xlabel("k (Number of Neighbors)")
+    plt.ylabel("Macro F1")
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.legend()
+    plt.tight_layout()
+    fig_path = out_dir / "knn_k_sensitivity.png"
+    plt.savefig(fig_path, dpi=300)
+    plt.close()
+    print(f"Saved KNN k-sensitivity plot to {fig_path} and CSV to {csv_path}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--name", default="knn")
+    ap.add_argument("--k", type=int, default=21)
+    ap.add_argument("--weights", default="distance", choices=["distance", "uniform"])
+    ap.add_argument("--metric", default="minkowski")
+    ap.add_argument("--subsample-negatives", action="store_true", default=True)
+    ap.add_argument("--no-subsample-negatives", action="store_false", dest="subsample_negatives")
+    ap.add_argument("--negative-ratio", type=float, default=4.0)
+    ap.add_argument("--max-train-samples", type=int, default=50000)
+    ap.add_argument("--n-jobs", type=int, default=-1)
+    ap.add_argument("--sweep-k", action="store_true", help="Run sensitivity sweep over k=[11, 21, 31]")
+    args = ap.parse_args()
+
+    if args.sweep_k:
+        run_k_sweep(args)
+    else:
+        cfg = build_config(args)
+        run_single_knn(args.name, cfg)
 
 
 if __name__ == "__main__":
-    run()
+    main()
