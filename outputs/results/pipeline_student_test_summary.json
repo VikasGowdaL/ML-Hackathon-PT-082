@@ -1,0 +1,18 @@
+{
+  "partition": "student_test",
+  "trips": 10,
+  "gps_points": 19160,
+  "model": "artifacts/models/final_model.joblib",
+  "ml_top1": 0.8561064718162839,
+  "hmm_top1": 0.8763048016701462,
+  "ml_continuity": 0.923759063543976,
+  "hmm_continuity": 0.9959783146584603,
+  "points_on_route": 0.9132045929018789,
+  "route_precision_mean": 0.8860973122328918,
+  "route_recall_mean": 0.9899867591235804,
+  "route_f1_mean": 0.9327391240861068,
+  "unbridged_breaks_total": 11,
+  "predict_s_mean": 0.854672120034229,
+  "predict_s_max": 1.8625350001384504,
+  "note": "point-weighted Top-1 / continuity; route metrics are per-trip means"
+}
