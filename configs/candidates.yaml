@@ -1,0 +1,24 @@
+# Candidate Generation Configuration for PathSnap
+# Milestone 2: Spatial indexing and candidate arc extraction
+
+# Default parameters
+default_radius_m: 50.0
+default_max_candidates: 30
+
+# Evaluation radii tested in benchmark experiments (in meters)
+test_radii_m:
+  - 30.0
+  - 50.0
+  - 100.0
+  - 200.0
+
+# Justification for max_candidates = 30:
+# In dense urban road networks, a 50m search radius typically covers 2 to 8 candidate arcs
+# (opposing directions, parallel access lanes, and intersection cross-streets).
+# A cap of 30 ensures >99.9% candidate recall even at wider search radii (100m-200m)
+# while strictly bounding downstream pairwise transition matrix complexity (30 x 30 = 900 max pairs)
+# and preventing memory spikes on complex intersections.
+
+spatial_index:
+  method: "strtree" # 'strtree' using shapely.STRtree on 2D line segment geometries
+  cache_index: true # Cache spatial trees per trip in data/cache/

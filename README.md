@@ -123,9 +123,20 @@ ML-Hackathon-PT-082/
 
 Following the project plan, Milestone 2 focuses on candidate extraction and feature engineering:
 
-1. **Candidate Generation**: Spatial indexing (`cKDTree` / `STRtree`) to query candidate road arcs within radius $r$ around GPS points in metric UTM coordinates.
-2. **Labels and Miss Rate**: Ground-truth label assignment from `.route` to candidate arcs, and calculation of candidate recall / miss rate on `train` and `student_test`.
-3. **Geometry Features**: Perpendicular distances, heading alignment, arc lengths, and projected point offsets.
-4. **Sequence Features plus Assembly**: Consecutive GPS delta times ($\Delta t$), speed estimates, topological transition connectivity between candidate arcs, and assembling tabular datasets for candidate ranking.
+1. **Candidate Generation (Person 1 - Completed)**:
+   - Implemented in [`src/pathsnap/features/candidates.py`](file:///Users/aarizdudekula/college2/ml/ML_HACKATHON/ML-Hackathon-PT-082/src/pathsnap/features/candidates.py).
+   - Uses `shapely.STRtree` on segment geometries in metric UTM space (avoids midpoint KD-tree failures on long arcs).
+   - Generates candidate pairs `(trip_id, obs_idx, arc_id, distance_m)` sorted by distance and capped at $k=30$.
+   - Output per-trip parquet files: `outputs/candidates/<radius>/<trip_id>.parquet`.
+   - Summary audit tables: `outputs/candidates/summary_<radius>.csv`.
+   - Full documentation and benchmark timings in [`docs/candidate_generation.md`](file:///Users/aarizdudekula/college2/ml/ML_HACKATHON/ML-Hackathon-PT-082/docs/candidate_generation.md).
+   - Command to reproduce:
+     ```bash
+     python scripts/generate_candidates.py --all-radii
+     ```
+
+2. **Labels and Miss Rate (Person 2)**: Ground-truth label assignment from `.route` to candidate arcs, and calculation of candidate recall / miss rate on `train` and `student_test`.
+3. **Geometry Features (Person 3)**: Perpendicular distances, heading alignment, arc lengths, and projected point offsets.
+4. **Sequence Features plus Assembly (Person 4)**: Consecutive GPS delta times ($\Delta t$), speed estimates, topological transition connectivity between candidate arcs, and assembling tabular datasets for candidate ranking.
 
 *(HMM transition/emission decoding and API deployment are scheduled for subsequent milestones).*
