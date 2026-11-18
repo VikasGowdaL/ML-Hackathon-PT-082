@@ -60,9 +60,44 @@ same folds and seed (42); 22 trials run, 21 completed (1 failed).
 | Best parameters | `n_estimators=200, learning_rate=0.0260, num_leaves=42, max_depth=9, min_child_samples=50, colsample_bytree=0.754, reg_alpha=4.81, reg_lambda=0.0229`, `class_weight="balanced"` |
 | Student-test (after tuning, checked once) | Top-1 0.8574, macro F1 0.8834, log loss 0.1233, route continuity 0.9234 |
 
-The gain from tuning is small (+0.002 Top-1), consistent with all models sitting near 0.84: the remaining errors are
-limited by the features (e.g. the two directions of a two-way street are geometrically identical), and are largely
-recovered by the HMM (below).
+### Search space (Optuna `suggest_*`)
+
+| Hyperparameter | Range / distribution | Untuned value | Best value |
+|---|---|---|---|
+| `n_estimators` | int 100 – 600, step 50 | 200 | 200 |
+| `learning_rate` | float 0.01 – 0.15, log-uniform | 0.05 | 0.0260 |
+| `num_leaves` | int 15 – 63 | 31 | 42 |
+| `max_depth` | int 3 – 12 | −1 (no limit) | 9 |
+| `min_child_samples` | int 10 – 100 | 50 | 50 |
+| `colsample_bytree` | float 0.6 – 1.0 | 1.0 (default) | 0.754 |
+| `reg_alpha` | float 0.0 – 5.0 | 0.0 (default) | 4.81 |
+| `reg_lambda` | float 0.0 – 5.0 | 0.0 (default) | 0.0229 |
+
+Fixed: `class_weight="balanced"`, `random_state=42`, binary log loss objective. Trial history:
+`reports/figures/bayesian_trials.png`.
+
+### Untuned vs tuned (identical harness protocol, same folds and partitions)
+
+The tuned model was re-evaluated with exactly the untuned model's protocol
+(`python -m pathsnap.models.train_lightgbm_tuned`, logged as `lightgbm_tuned`):
+
+| Metric | Untuned `lightgbm` | Tuned `lightgbm_tuned` |
+|---|---|---|
+| CV Top-1 (optimisation objective) | 0.8431 | **0.8455** |
+| CV macro F1 | **0.8734** ± 0.0234 | 0.8687 ± 0.0264 |
+| CV log loss | **0.1412** | 0.1473 |
+| CV route continuity | 0.9220 | **0.9226** |
+| Student-test Top-1 | **0.8598** | 0.8573 |
+| Student-test macro F1 | **0.8876** | 0.8832 |
+| Student-test log loss | **0.1163** | 0.1234 |
+| Inference (ms per 1,000 rows) | **1.74** | 3.60 |
+
+**Conclusion:** tuning improved only its own objective, and only by +0.0024 CV Top-1, which is smaller than the fold
+standard deviation (0.034). It was slightly worse on every other metric, including the student-test partition, and
+twice as slow at inference. The tuned model was kept as the final model because the selection rule (CV Top-1 first) was
+fixed before tuning and student-test results are not used for selection; the untuned model is practically equivalent.
+All models sit near 0.84 Top-1: the remaining errors are limited by the features (e.g. the two directions of a two-way
+street are geometrically identical) and are partly recovered by the HMM (below).
 
 ## Final model and pipeline
 
