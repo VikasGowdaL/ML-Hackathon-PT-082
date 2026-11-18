@@ -66,14 +66,50 @@ All hyperparameters are centralized in `KNN_CONFIG` in `src/pathsnap/models/trai
 
 ---
 
-## 5. Experimental Results (Held Blank)
+## 5. Experimental Results
 
-*To be populated by the shared model evaluation harness across GroupKFold cross-validation on the 80 training trips.*
+Run: `python -m pathsnap.models.train_knn` (default config: k = 21, distance weights, Euclidean, 4:1 negative subsampling capped at
+50,000 training rows). Source: `outputs/results/experiments.csv` (model `knn`), `outputs/results/folds/knn_folds.csv`,
+`outputs/results/student/knn_per_trip.csv`. PR-AUC and ROC-AUC are not computed by the shared harness and are therefore not reported.
 
-| Metric | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Mean ± Std |
+### Grouped 5-fold CV (validation folds, 16 trips each)
+
+| Metric | Fold 0 | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Mean ± Std |
 |---|---|---|---|---|---|---|
-| Log-Loss | | | | | | |
-| PR-AUC | | | | | | |
-| ROC-AUC | | | | | | |
-| Top-1 Acc | | | | | | |
-| Inference Latency | | | | | | |
+| Macro F1 | 0.8855 | 0.8736 | 0.8976 | 0.8750 | 0.8497 | 0.8763 ± 0.0177 |
+| Log loss | 0.1603 | 0.1503 | 0.1358 | 0.1465 | 0.2193 | 0.1624 ± 0.0330 |
+| Top-1 (true arc among candidates) | 0.8291 | 0.8034 | 0.8780 | 0.8129 | 0.7905 | 0.8228 ± 0.0339 |
+| Top-1 (all points) | 0.8137 | 0.7785 | 0.5815 | 0.8114 | 0.7295 | 0.7429 ± 0.0964 |
+| Route continuity | 0.9253 | 0.8961 | 0.9078 | 0.8474 | 0.9119 | 0.8977 ± 0.0300 |
+| Precision | 0.7426 | 0.7213 | 0.7483 | 0.7225 | 0.6481 | 0.7166 ± 0.0401 |
+| Recall | 0.8651 | 0.8335 | 0.9009 | 0.8360 | 0.8672 | 0.8605 ± 0.0275 |
+| Inference (ms / 1k rows) | 60.8 | 72.9 | 58.1 | 60.4 | 53.7 | 61.2 ± 7.1 |
+| Fit time (s) | 14.9 | 14.0 | 13.2 | 12.4 | 12.8 | 13.4 ± 1.0 |
+
+### Training vs CV vs student-test
+
+| Metric | Fold-train | CV mean | Full-train | Student-test |
+|---|---|---|---|---|
+| macro_f1 | 0.8919 | 0.8763 | 0.8905 | 0.8844 |
+| top1_when_candidate | 0.8554 | 0.8228 | 0.8520 | 0.8451 |
+| top1_all_points | 0.7606 | 0.7429 | 0.7567 | 0.8439 |
+| route_continuity | 0.9081 | 0.8977 | 0.9079 | 0.9044 |
+| log_loss | 0.1333 | 0.1624 | 0.1366 | 0.1338 |
+| precision | 0.7375 | 0.7166 | 0.7362 | 0.7205 |
+| recall | 0.8956 | 0.8605 | 0.8909 | 0.8829 |
+
+Student-test confusion matrix `[[TN, FP], [FN, TP]]` = `[[174366, 6553], [2240, 16893]]`.
+
+### Interpretation
+
+* **Generalisation gap:** fold-train vs CV macro F1 0.892 vs 0.876 and Top-1
+  0.855 vs 0.823: mild overfitting. Part of the training score is
+  inflated because ~50,000 of the scored training rows are the stored neighbours themselves (distance weighting gives them
+  their own label).
+* **Ranking:** CV Top-1 0.823 is the lowest of the logged models (others 0.840–0.843), although row-level
+  macro F1 (0.876) is high: the 4:1 subsampling shifts the threshold balance, but the neighbour vote ranks
+  candidates of the same GPS point less consistently. Route continuity is also the lowest (0.898).
+* **Cost:** inference 61.3 ms per 1,000 rows (≈ 30–60× the other models); the largest trip
+  (00000084, 92,587 rows) takes 6.4 s. Training uses only
+  50,000 of ~1.4 M rows (≈ 3.5 %).
+* Weakest fold: fold 4 (contains trip 00000033), as for every other model.
