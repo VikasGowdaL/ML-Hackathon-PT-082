@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pathsnap"
+version = "0.1.0"
+description = "Map-matching noisy GPS trips to road networks and HMM/Viterbi route reconstruction"
+authors = [{ name = "PathSnap Team" }]
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    "numpy>=1.26.0,<2.1.0",
+    "pandas>=2.1.0,<2.3.0",
+    "scipy>=1.11.0,<1.15.0",
+    "pyproj>=3.6.0,<3.8.0",
+    "shapely>=2.0.0,<2.1.0",
+    "networkx>=3.1.0,<3.5.0",
+    "pyyaml>=6.0.0,<6.1.0",
+    "tqdm>=4.66.0,<4.68.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0,<8.4.0",
+    "jupyter>=1.0.0,<1.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
