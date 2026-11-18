@@ -347,6 +347,9 @@ def load_trip(
                     nx, ny = project_coordinates(trip_data.nodes, "lon", "lat", target_crs=trip_data.utm_crs)
                     trip_data.nodes_utm = pd.DataFrame({"node_id": trip_data.nodes["node_id"].to_numpy(), "x": nx, "y": ny})
 
+                if trip_data.partition is None and norm_partition is not None:
+                    trip_data.partition = norm_partition
+
                 if is_evaluator:
                     if not allow_evaluator_labels:
                         trip_data.route = None
